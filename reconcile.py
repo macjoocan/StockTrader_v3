@@ -7,9 +7,14 @@ DEFAULT = {'positions': {}, 'last_trade_date': None, 'last_rebal_ym': None}
 
 def load_state(path: Path) -> dict:
     try:
-        return json.loads(Path(path).read_text(encoding='utf-8'))
+        state = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return dict(DEFAULT, positions={})
+    # finding #4: 파싱은 성공했지만 형태가 기대와 다르면(예: '{}') positions
+    # 접근에서 KeyError -> main 루프가 60초 sleep 후 무한 재시도하게 됨. DEFAULT로 방어.
+    if not isinstance(state, dict) or not isinstance(state.get('positions'), dict):
+        return dict(DEFAULT, positions={})
+    return state
 
 
 def save_state(path: Path, state: dict) -> None:

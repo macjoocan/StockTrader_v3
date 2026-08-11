@@ -28,6 +28,13 @@ def snapshot_from_pykis(balance_obj) -> Snapshot:
 
 
 def extract_fill_price(order_obj, current_price: float) -> float:
+    """체결가 추출 + 현재가 폴백.
+
+    주의(드리프트): KisBroker.market_order()는 이 함수를 호출하지 않고, 가격이
+    없을 때만 current_price를 지연호출(quote는 필요할 때만 조회)하는 버전을
+    인라인으로 따로 구현한다. 이 함수는 test_broker_mapping.test_fill_price_fallback
+    이 사용하므로 유지 — 두 구현이 갈라지지 않게 로직을 바꿀 땐 양쪽을 함께 확인할 것.
+    """
     price = getattr(order_obj, 'price', None)
     if price:
         return float(price)

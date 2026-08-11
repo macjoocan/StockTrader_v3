@@ -178,6 +178,39 @@ def test_failed_rebalance_does_not_update_last_rebal_ym():
     assert state['last_rebal_ym'] is None
 
 
+def test_sell_fill_price_zero_normalized_for_available_cash():
+    # finding #2: SELL 체결가 0을 정규화하지 않으면 available_cash가 매도대금을
+    # 못 반영해 이후 BUY 사이징이 과소평가됨 (cash가 부족해 BUY가 스킵됨)
+    class ZeroPriceBroker(FakeBroker):
+        def market_order(self, code, side, qty):
+            self.orders.append((code, side, qty))
+            return Fill(code, side, qty, 0.0, ok=True, reason='price_lookup_failed')
+
+    snap = Snapshot(total=1_000_000, cash=10_000, holdings={'SELL_ME': (3, 60000)})
+    closes = {'SELL_ME': up_series(), 'BUY_ME': dip_series()}
+    broker = ZeroPriceBroker(closes, snap)
+    state = {'positions': {'SELL_ME': {'qty': 3, 'entry_price': 55000, 'entry_date': 'x'}},
+             'last_trade_date': None, 'last_rebal_ym': None}
+    run_daily(broker, ['SELL_ME', 'BUY_ME'], state, '2026-08-12', FakeLog(), FakeNotifier(),
+              do_rebalance=False)
+    assert ('SELL_ME', 'SELL', 3) in broker.orders
+    # 정규화 없으면 cash=10,000뿐이라 BUY_ME(6만원대)를 못 사서 주문 자체가 안 나감
+    assert any(o[0] == 'BUY_ME' and o[1] == 'BUY' for o in broker.orders)
+    assert state['positions']['BUY_ME']['entry_price'] == float(dip_series().iloc[-1])
+
+
+def test_holding_outside_universe_can_be_sold():
+    # finding #3: 유니버스 밖 보유종목(대사로 adopt됨)도 SMA5 위로 오르면 매도돼야 함
+    # (안 그러면 영구 슬롯 점유 + 청산 불가)
+    snap = Snapshot(total=1_000_000, cash=500_000, holdings={'ORPHAN': (2, 60000)})
+    broker = FakeBroker({'ORPHAN': up_series()}, snap)
+    state = {'positions': {'ORPHAN': {'qty': 2, 'entry_price': 55000, 'entry_date': 'x'}},
+             'last_trade_date': None, 'last_rebal_ym': None}
+    run_daily(broker, [], state, '2026-08-12', FakeLog(), FakeNotifier(), do_rebalance=False)
+    assert ('ORPHAN', 'SELL', 2) in broker.orders
+    assert state['positions'] == {}
+
+
 def test_broker_exception_does_not_crash_run_daily():
     class ExplodingBroker(FakeBroker):
         def market_order(self, code, side, qty):

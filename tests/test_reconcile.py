@@ -49,6 +49,14 @@ def test_load_missing_returns_default(tmp_path):
     assert s == {'positions': {}, 'last_trade_date': None, 'last_rebal_ym': None}
 
 
+def test_load_state_malformed_positions_returns_default(tmp_path):
+    # finding #4: 파싱은 성공하지만 positions가 없거나 dict가 아니면 DEFAULT로 방어
+    # (안 그러면 이후 state['positions'] 접근에서 KeyError -> main 루프 무한 60s 재시도)
+    p = tmp_path / 'bad.json'
+    p.write_text('{}', encoding='utf-8')
+    assert load_state(p) == {'positions': {}, 'last_trade_date': None, 'last_rebal_ym': None}
+
+
 def test_phantom_loop_ignores_core_code():
     state = {'positions': {'069500': {'qty': 10, 'entry_price': 40000, 'entry_date': 'x'}},
              'last_trade_date': None, 'last_rebal_ym': None}

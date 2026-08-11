@@ -56,3 +56,15 @@ def test_heartbeat_at_exact_300sec():
     now = datetime(2026, 8, 10, 10, 5, 0)  # 10:05:00
     old_hb = datetime(2026, 8, 10, 10, 0, 0)  # 10:00:00 (300 sec ago)
     assert next_action(now, old_hb, None) == 'heartbeat'
+
+
+def test_no_trade_after_cutoff():
+    """Finding #1: 15:25 지나면 장외 시장가 주문 위험 -> trade 대신 sleep/heartbeat."""
+    late = datetime(2026, 8, 10, 15, 26)  # 월요일, 컷오프(15:25) 초과
+    assert next_action(late, last_hb=late, last_trade_date=None) == 'sleep'
+
+
+def test_trade_at_exact_cutoff():
+    """Boundary: 정각 15:25:00은 여전히 trade 가능 (<= TRADE_CUTOFF)."""
+    at_cutoff = datetime(2026, 8, 10, 15, 25, 0)
+    assert next_action(at_cutoff, last_hb=at_cutoff, last_trade_date=None) == 'trade'
