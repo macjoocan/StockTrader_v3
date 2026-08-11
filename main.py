@@ -35,37 +35,48 @@ def main():
 
     last_hb = None
     while True:
-        now = datetime.now(KST)
-        state = load_state(state_path)
-        ltd = (date.fromisoformat(state['last_trade_date'])
-               if state['last_trade_date'] else None)
-        action = next_action(now, last_hb, ltd)
-        if action == 'heartbeat':
-            print(f'[{now:%F %T}] heartbeat 보유 {len(state["positions"])}')
-            last_hb = now
-        elif action == 'trade':
-            # 스펙 §2: 동시호가(15:20~30) 제출 — 15:20:30까지 대기 후 실행
-            target = now.replace(hour=15, minute=20, second=30, microsecond=0)
-            wait = (target - datetime.now(KST)).total_seconds()
-            if wait > 0:
-                time.sleep(wait)
+        try:
+            now = datetime.now(KST)
+            state = load_state(state_path)
             try:
-                do_rebal = state['last_rebal_ym'] != f'{now:%Y-%m}'
-                for attempt in range(3):
-                    try:
-                        run_daily(broker, universe, state, f'{now:%F}', log,
-                                  notifier, do_rebalance=do_rebal)
-                        break
-                    except Exception as e:
-                        print(f'[{now:%F %T}] 일일작업 재시도 {attempt+1}/3: {e}')
-                        time.sleep(10)
-                else:
-                    notifier.send('❌ 일일작업 3회 실패 — 오늘 스킵')
-                    log.write('error', msg='일일작업 3회 실패')
-                    state['last_trade_date'] = f'{now:%F}'  # 오늘 재시도 안 함
-            finally:
-                save_state(state_path, state)
-        time.sleep(5)
+                ltd = (date.fromisoformat(state['last_trade_date'])
+                       if state['last_trade_date'] else None)
+            except ValueError as e:
+                print(f'[{now:%F %T}] last_trade_date 파싱 오류: {e}', flush=True)
+                log.write('error', msg=f'last_trade_date parse: {e}')
+                ltd = None
+            action = next_action(now, last_hb, ltd)
+            if action == 'heartbeat':
+                print(f'[{now:%F %T}] heartbeat 보유 {len(state["positions"])}')
+                last_hb = now
+            elif action == 'trade':
+                # 스펙 §2: 동시호가(15:20~30) 제출 — 15:20:30까지 대기 후 실행
+                target = now.replace(hour=15, minute=20, second=30, microsecond=0)
+                wait = (target - datetime.now(KST)).total_seconds()
+                if wait > 0:
+                    time.sleep(wait)
+                try:
+                    for attempt in range(3):
+                        do_rebal = state.get('last_rebal_ym') != f'{now:%Y-%m}'
+                        try:
+                            run_daily(broker, universe, state, f'{now:%F}', log,
+                                      notifier, do_rebalance=do_rebal)
+                            break
+                        except Exception as e:
+                            print(f'[{now:%F %T}] 일일작업 재시도 {attempt+1}/3: {e}')
+                            time.sleep(10)
+                    else:
+                        notifier.send('❌ 일일작업 3회 실패 — 오늘 스킵')
+                        log.write('error', msg='일일작업 3회 실패')
+                        state['last_trade_date'] = f'{now:%F}'  # 오늘 재시도 안 함
+                finally:
+                    save_state(state_path, state)
+            time.sleep(5)
+        except Exception as e:
+            now = datetime.now(KST)
+            print(f'[{now:%F %T}] 루프 오류: {e}', flush=True)
+            log.write('error', msg=f'main loop: {e}')
+            time.sleep(60)
 
 
 if __name__ == '__main__':
