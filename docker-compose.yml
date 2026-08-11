@@ -1,0 +1,10 @@
+services:
+  stock-trader:
+    build: .
+    container_name: stock-trader
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    volumes:
+      - ./data-volume:/data
