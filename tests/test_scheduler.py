@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
 
 from scheduler import next_action
 
@@ -33,3 +33,26 @@ def test_heartbeat_every_5min():
 
 def test_trade_priority_over_heartbeat():
     assert next_action(MON_1520, last_hb=None, last_trade_date=None) == 'trade'
+
+
+def test_aware_kst_datetimes_work():
+    """Test that tz-aware datetimes (KST) work correctly without TypeError."""
+    KST = timezone(timedelta(hours=9))
+    now = datetime(2026, 8, 10, 15, 20, tzinfo=KST)
+    hb = datetime(2026, 8, 10, 15, 20, tzinfo=KST)
+    # Both aware, same timezone: should work
+    assert next_action(now, hb, None) == 'trade'
+    assert next_action(now, hb, date(2026, 8, 10)) == 'sleep'
+
+
+def test_trade_at_exact_1519():
+    """Boundary: exactly 15:19:00 is >= TRADE_TIME."""
+    mon_1519_exact = datetime(2026, 8, 10, 15, 19, 0)
+    assert next_action(mon_1519_exact, mon_1519_exact, None) == 'trade'
+
+
+def test_heartbeat_at_exact_300sec():
+    """Boundary: exactly 300 seconds elapsed triggers heartbeat."""
+    now = datetime(2026, 8, 10, 10, 5, 0)  # 10:05:00
+    old_hb = datetime(2026, 8, 10, 10, 0, 0)  # 10:00:00 (300 sec ago)
+    assert next_action(now, old_hb, None) == 'heartbeat'
