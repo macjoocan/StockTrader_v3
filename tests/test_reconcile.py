@@ -47,3 +47,11 @@ def test_state_roundtrip_atomic(tmp_path):
 def test_load_missing_returns_default(tmp_path):
     s = load_state(tmp_path / 'nope.json')
     assert s == {'positions': {}, 'last_trade_date': None, 'last_rebal_ym': None}
+
+
+def test_phantom_loop_ignores_core_code():
+    state = {'positions': {'069500': {'qty': 10, 'entry_price': 40000, 'entry_date': 'x'}},
+             'last_trade_date': None, 'last_rebal_ym': None}
+    new, warns = reconcile(state, snap(**{'069500': (10, 40000)}), core_code='069500')
+    assert warns == []  # 코어는 phantom 경고 대상 아님
+    assert '069500' not in new['positions']  # 새틀에서 제외는 유지
