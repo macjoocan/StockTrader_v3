@@ -21,6 +21,11 @@ for y in range(2016, 2027):
     except FileNotFoundError:
         # d:/tmp/marcap에 2016년 파일이 없음 (2017~2026만 존재) — bt_kospi_mom.main()과
         # 동일하게 없는 연도는 건너뜀 (원본 로직/상수 변경 아님)
+        # 주의: 데이터가 2017년부터 시작하면 SMA200 유효 시점이 늦춰져(~2017-10/11),
+        # 2016년 데이터가 있었다면 존재했을 진입(2016-10~2017-11) 중 exit>=2018-01-01인
+        # 트레이드가 이 픽스처에는 빠질 수 있음. 이 픽스처는 "bt_rsi2 vs 라이브 신호모듈
+        # 동등성 검증"용이며, 완전한 2016~2026 트레이드 이력을 보장하지 않음 — 골든
+        # 테스트와 픽스처가 동일한 절단 데이터를 소비하므로 동등성 검증 목적에는 무관.
         continue
     daily.append(df[df['Code'].isin(CODES)])
 daily = pd.concat(daily, ignore_index=True)
