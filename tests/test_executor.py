@@ -116,7 +116,8 @@ def test_failed_order_does_not_update_state():
     run_daily(broker, ['AAA'], state, '2026-08-12', FakeLog(), notif,
               do_rebalance=False)
     assert state['positions'] == {}
-    assert any('실패' in m for m in notif.msgs)
+    # 동어반복 방지: 일일요약("실패N")이 아니라 전용 주문실패 알림을 확인
+    assert any('❌ 주문 실패' in m for m in notif.msgs)
 
 
 def test_buy_fill_price_zero_falls_back_to_close():
@@ -129,4 +130,63 @@ def test_buy_fill_price_zero_falls_back_to_close():
                                  Snapshot(total=1_000_000, cash=1_000_000, holdings={}))
     state = base_state()
     run_daily(broker, ['AAA'], state, '2026-08-12', FakeLog(), FakeNotifier(), do_rebalance=False)
-    assert state['positions']['AAA']['entry_price'] > 0
+    # 실제 종가 값과 정확히 일치해야 함 (0.0을 그냥 방치하지 않았는지)
+    assert state['positions']['AAA']['entry_price'] == float(dip_series().iloc[-1])
+
+
+def test_sell_submitted_before_buy():
+    # 같은 실행에서 SELL 신호(보유중)와 BUY 신호(미보유)가 동시에 나올 때
+    # 실제 주문 제출 순서가 SELL -> BUY 인지 확인 (현금 확보 순서 불변)
+    snap = Snapshot(total=1_000_000, cash=500_000, holdings={'SELL_ME': (3, 60000)})
+    closes = {'SELL_ME': up_series(), 'BUY_ME': dip_series()}
+    broker = FakeBroker(closes, snap)
+    state = {'positions': {'SELL_ME': {'qty': 3, 'entry_price': 55000, 'entry_date': 'x'}},
+             'last_trade_date': None, 'last_rebal_ym': None}
+    run_daily(broker, ['SELL_ME', 'BUY_ME'], state, '2026-08-12', FakeLog(), FakeNotifier(),
+              do_rebalance=False)
+    sides = [o[1] for o in broker.orders]
+    assert 'SELL' in sides and 'BUY' in sides
+    assert sides.index('SELL') < sides.index('BUY')
+
+
+def test_core_rebalance_cost_reduces_satellite_buy_cash():
+    # 코어 리밸 BUY가 현금 대부분을 소모하면, 이후 종목 BUY 사이징에
+    # 그 소모가 반영되어야 함 (반영 안 되면 잔고 초과 주문 위험)
+    snap = Snapshot(total=1_000_000, cash=660_000, holdings={})
+    closes = {'BUY_ME': dip_series(), '069500': up_series()}
+    broker = FakeBroker(closes, snap)
+    state = base_state()
+    run_daily(broker, ['BUY_ME'], state, '2026-08-12', FakeLog(), FakeNotifier(),
+              do_rebalance=True)
+    # 코어 리밸(700,000원 목표매수, 65,000원 -> 10주)이 실행되어 현금이 10,000원만 남음
+    assert ('069500', 'BUY', 10) in broker.orders
+    # 남은 현금(10,000)으로는 BUY_ME(6만원대)를 살 수 없어야 함
+    assert not any(o[0] == 'BUY_ME' and o[1] == 'BUY' for o in broker.orders)
+
+
+def test_failed_rebalance_does_not_update_last_rebal_ym():
+    class RejectRebalBroker(FakeBroker):
+        def market_order(self, code, side, qty):
+            self.orders.append((code, side, qty))
+            return Fill(code, side, qty, 0.0, ok=False, reason='rejected')
+
+    snap = Snapshot(total=1_000_000, cash=1_000_000, holdings={})
+    broker = RejectRebalBroker({'069500': up_series()}, snap)
+    state = base_state()
+    run_daily(broker, [], state, '2026-08-12', FakeLog(), FakeNotifier(), do_rebalance=True)
+    # 리밸 주문이 거부됐으면 이번 달을 "처리됨"으로 마킹하면 안 됨 (재시도 가능해야 함)
+    assert state['last_rebal_ym'] is None
+
+
+def test_broker_exception_does_not_crash_run_daily():
+    class ExplodingBroker(FakeBroker):
+        def market_order(self, code, side, qty):
+            raise RuntimeError('network timeout')
+
+    broker = ExplodingBroker({'AAA': dip_series()},
+                             Snapshot(total=1_000_000, cash=1_000_000, holdings={}))
+    state = base_state()
+    notif = FakeNotifier()
+    run_daily(broker, ['AAA'], state, '2026-08-12', FakeLog(), notif, do_rebalance=False)
+    assert state['positions'] == {}
+    assert any('❌ 주문 실패' in m for m in notif.msgs)

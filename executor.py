@@ -1,3 +1,4 @@
+from broker.kis import Fill
 from portfolio.allocator import CORE_CODE, core_rebalance, size_buy, slot_budget
 from reconcile import reconcile
 from signal_engine.strategy import scan
@@ -6,6 +7,8 @@ SLOTS = 4
 
 
 def run_daily(broker, universe, state, today, log, notifier, do_rebalance):
+    universe = [c for c in universe if c != CORE_CODE]  # 코어는 리밸런싱 경로로만 매매
+
     snap = broker.balance()
     new_state, warns = reconcile(state, snap, CORE_CODE)
     state['positions'] = new_state['positions']
@@ -28,16 +31,23 @@ def run_daily(broker, universe, state, today, log, notifier, do_rebalance):
 
     fills, fails = [], []
 
-    def submit(code, side, qty, entry_price=None):
+    def submit(code, side, qty) -> bool | None:
+        """주문 제출. 반환: True=체결, False=거부/예외, None=주문 안 함(qty<=0)."""
         if qty <= 0:
-            return
-        f = broker.market_order(code, side, qty)
+            return None
+        try:
+            f = broker.market_order(code, side, qty)
+        except Exception as e:
+            log.write('error', code=code, side=side, qty=qty, reason=str(e))
+            notifier.send(f'❌ 주문 실패: {code} {side} {qty} — {e}')
+            fails.append(Fill(code, side, qty, 0.0, ok=False, reason=str(e)))
+            return False
         log.write('fill' if f.ok else 'error', code=code, side=side, qty=qty,
                   price=f.price, ok=f.ok, reason=f.reason)
         if not f.ok:
             fails.append(f)
             notifier.send(f'❌ 주문 실패: {code} {side} {qty} — {f.reason}')
-            return
+            return False
         fills.append(f)
         if side == 'SELL' and code in state['positions']:
             del state['positions'][code]
@@ -45,6 +55,7 @@ def run_daily(broker, universe, state, today, log, notifier, do_rebalance):
             price = f.price if f.price > 0 else float(closes[code].iloc[-1])
             state['positions'][code] = {'qty': qty, 'entry_price': price,
                                         'entry_date': today}
+        return True
 
     # 1) SELL 먼저 (현금 확보)
     for i in [x for x in intents if x.side == 'SELL']:
@@ -53,28 +64,32 @@ def run_daily(broker, universe, state, today, log, notifier, do_rebalance):
     # 2) 월초 코어 리밸런싱
     if do_rebalance:
         try:
-            core_qty, core_px = snap.holdings.get(CORE_CODE, (0, 0.0))
+            core_qty, _ = snap.holdings.get(CORE_CODE, (0, 0.0))
             px = broker.current_price(CORE_CODE)
             order = core_rebalance(snap.total, core_qty * px, px)
-            if order:
-                submit(order.code, order.side, order.qty)
-            state['last_rebal_ym'] = today[:7]
-            log.write('rebalance', ym=today[:7], order=bool(order))
+            ok = submit(order.code, order.side, order.qty) if order else True
+            if ok:
+                state['last_rebal_ym'] = today[:7]  # 실패 시 미갱신 -> 다음 실행에서 재시도
+            log.write('rebalance', ym=today[:7], order=bool(order), ok=bool(ok))
         except Exception as e:
             log.write('error', msg=f'리밸런싱 실패: {e}')
             notifier.send(f'❌ 리밸런싱 실패: {e}')
 
-    # 3) BUY (슬롯 재계산)
+    # 3) BUY — 슬롯/현금은 SELL·코어리밸 체결분을 매 반복 재계산해 반영 (이중차감 없음)
     budget = slot_budget(snap.total)
-    cash = snap.cash + sum(f.price * f.qty for f in fills if f.side == 'SELL')
+
+    def available_cash():
+        return snap.cash + sum(
+            f.price * f.qty if f.side == 'SELL' else -f.price * f.qty
+            for f in fills
+        )
+
     for i in [x for x in intents if x.side == 'BUY']:
         if len(state['positions']) >= SLOTS:
             break
         px = closes[i.code].iloc[-1]
-        qty = size_buy(budget, px, cash)
+        qty = size_buy(budget, px, available_cash())
         submit(i.code, 'BUY', qty)
-        if qty > 0:
-            cash -= px * qty
 
     state['last_trade_date'] = today
     summary = {'signals': len(intents), 'fills': len(fills), 'fails': len(fails),
