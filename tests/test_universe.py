@@ -8,3 +8,5 @@ def test_universe_schema():
     assert u['year'] == 2026
     assert len(u['codes']) == 20
     assert all(c.isdigit() and len(c) == 6 for c in u['codes'])
+    assert all(c.endswith('0') for c in u['codes'])  # 보통주만
+    assert '069500' not in u['codes']  # CORE_CODE 제외

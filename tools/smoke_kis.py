@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """KIS 모의투자 스모크: pykis 콜사이트 3곳 검증 (잔고/일봉/현재가 — 주문은 수동확인 후).
-   사전조건: .env에 KIS 키 설정. 실행: python tools/smoke_kis.py"""
+   사전조건: 환경변수로 export 필요 (스크립트는 os.environ만 읽음; docker-compose 경유 시
+   env_file이 주입). 실행: python tools/smoke_kis.py"""
 import os
 import sys
 from pathlib import Path
