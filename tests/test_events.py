@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 from events.log import EventLog
 
@@ -18,3 +19,8 @@ def test_append_and_daily_file(tmp_path):
 def test_write_never_raises(tmp_path):
     log = EventLog(tmp_path / 'no' / 'such' / 'dir')
     log.write('signal', x=1)  # 디렉토리 없음 -> 조용히 실패해야 함
+
+
+def test_write_never_raises_on_unserializable(tmp_path):
+    log = EventLog(tmp_path)
+    log.write('fill', price=Decimal('70000.5'))  # 예외 없어야 함

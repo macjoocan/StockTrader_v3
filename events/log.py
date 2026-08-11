@@ -16,5 +16,5 @@ class EventLog:
             path = self.dir / f'events_{now:%Y-%m-%d}.jsonl'
             with open(path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-        except OSError:
+        except Exception:
             pass
