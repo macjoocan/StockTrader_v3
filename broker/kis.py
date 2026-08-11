@@ -64,7 +64,13 @@ class KisBroker:
         try:
             stock = self.kis.stock(code)
             order = stock.buy(qty=qty) if side == 'BUY' else stock.sell(qty=qty)
-            price = extract_fill_price(order, self.current_price(code))
-            return Fill(code, side, qty, price, ok=True)
         except Exception as e:
             return Fill(code, side, qty, 0.0, ok=False, reason=str(e))
+        # 주문은 성공 — 이후 어떤 실패도 ok=False로 바꾸면 안 됨
+        price = getattr(order, 'price', None)
+        if not price:
+            try:
+                price = self.current_price(code)
+            except Exception:
+                return Fill(code, side, qty, 0.0, ok=True, reason='price_lookup_failed')
+        return Fill(code, side, qty, float(price), ok=True)
