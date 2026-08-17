@@ -8,3 +8,16 @@ services:
       - DATA_DIR=/data
     volumes:
       - ./data-volume:/data
+
+  stock-dashboard:
+    build: .
+    container_name: stock-dashboard
+    restart: unless-stopped
+    command: python dashboard.py
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    ports:
+      - "5030:5030"
+    volumes:
+      - ./data-volume:/data
