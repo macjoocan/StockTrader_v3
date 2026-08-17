@@ -94,3 +94,64 @@ def test_market_order_order_itself_fails_returns_not_ok():
     f = b.market_order('005930', 'BUY', 3)
     assert f.ok is False and '장운영시간' in f.reason
     assert b.quote_calls == 0  # 주문 실패 시 시세조회 안 함
+
+
+def _chart_rows(dates):
+    return [{'stck_bsop_date': d.strftime('%Y%m%d'), 'stck_clpr': '70000'} for d in dates]
+
+
+def test_daily_closes_paginates_via_anchor():
+    import pandas as pd
+    page0 = pd.bdate_range(end='2026-08-10', periods=100)
+    page1 = pd.bdate_range(end=page0[0] - pd.Timedelta(1, unit='D'), periods=100)
+    b = KisBroker.__new__(KisBroker)
+    b.mode = 'paper'
+    calls = []
+
+    def fake_request(method, path, tr_id, params=None, body=None, tr_cont=''):
+        calls.append(dict(params))
+        rows = _chart_rows(page0 if len(calls) == 1 else page1)
+        return {'rt_cd': '0', 'output2': rows}
+
+    b._request = fake_request
+    s = b.daily_closes('005930', days=150)
+    assert len(s) == 150
+    assert s.index.is_monotonic_increasing and s.index.is_unique
+    assert s.index[-1] == pd.Timestamp('2026-08-10')
+    assert len(calls) == 2  # 100건 + 100건이면 150 충족 후 정지
+    # 2번째 호출의 종료일 = 1페이지 최소일자 - 1일 (앵커 이동)
+    expected_anchor = (page0[0] - pd.Timedelta(1, unit='D')).strftime('%Y%m%d')
+    assert calls[1]['FID_INPUT_DATE_2'] == expected_anchor
+
+
+def test_daily_closes_stops_on_empty_page():
+    b = KisBroker.__new__(KisBroker)
+    b.mode = 'paper'
+    b._request = lambda *a, **k: {'rt_cd': '0', 'output2': []}
+    s = b.daily_closes('005930', days=100)
+    assert s.empty
+
+
+def test_balance_continuation_accumulates_and_forwards_ctx():
+    b = KisBroker.__new__(KisBroker)
+    b.mode, b.cano, b.prdt = 'paper', '12345678', '01'
+    calls = []
+
+    def fake_request(method, path, tr_id, params=None, body=None, tr_cont=''):
+        calls.append((dict(params), tr_cont))
+        if len(calls) == 1:
+            return {'rt_cd': '0', '_tr_cont': 'M',
+                    'output1': [{'pdno': '005930', 'hldg_qty': '3', 'prpr': '70000'}],
+                    'output2': [],
+                    'ctx_area_fk100': 'FK1', 'ctx_area_nk100': 'NK1'}
+        return {'rt_cd': '0', '_tr_cont': '',
+                'output1': [{'pdno': '000660', 'hldg_qty': '1', 'prpr': '200000'}],
+                'output2': [{'dnca_tot_amt': '500000', 'tot_evlu_amt': '910000'}]}
+
+    b._request = fake_request
+    s = b.balance()
+    assert s.holdings == {'005930': (3, 70000.0), '000660': (1, 200000.0)}
+    assert s.total == 910000.0 and s.cash == 500000.0
+    assert calls[1][1] == 'N'  # 연속조회 헤더
+    assert calls[1][0]['CTX_AREA_FK100'] == 'FK1'
+    assert calls[1][0]['CTX_AREA_NK100'] == 'NK1'

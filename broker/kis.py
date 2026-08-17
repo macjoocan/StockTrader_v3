@@ -106,10 +106,15 @@ class KisBroker:
     # ---- 인증 ----
 
     def _token(self) -> str:
+        # 1) 인메모리 -> 2) 파일캐시 -> 3) 재발급 (KIS 토큰 발급 유량 제한 있음)
+        memo = getattr(self, '_token_memo', None)
+        if memo and memo['expires_at'] > time.time() + 600:
+            return memo['token']
         cache = self.data_dir / f'kis_token_{self.mode}.json'
         try:
             saved = json.loads(cache.read_text(encoding='utf-8'))
             if saved['expires_at'] > time.time() + 600:
+                self._token_memo = saved
                 return saved['token']
         except (OSError, ValueError, KeyError):
             pass
@@ -120,15 +125,18 @@ class KisBroker:
             timeout=10)
         r.raise_for_status()
         body = r.json()
-        token = body['access_token']
-        expires_at = time.time() + int(body.get('expires_in') or 86400)
+        saved = {'token': body['access_token'],
+                 'expires_at': time.time() + int(body.get('expires_in') or 86400)}
+        self._token_memo = saved
         try:
             cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(json.dumps({'token': token, 'expires_at': expires_at}),
-                             encoding='utf-8')
+            tmp = cache.with_suffix('.json.tmp')
+            tmp.write_text(json.dumps(saved), encoding='utf-8')
+            import os
+            os.replace(tmp, cache)
         except OSError:
-            pass  # 캐시 실패는 무해 (매번 재발급 시도)
-        return token
+            pass  # 캐시 실패는 무해 (재발급 시도)
+        return saved['token']
 
     # ---- 공통 호출 ----
 
