@@ -1,100 +1,96 @@
-from types import SimpleNamespace
+"""KIS 공식 REST 응답 매핑 순수함수 + market_order 제어흐름 테스트.
 
-from broker.kis import Fill, KisBroker, extract_fill_price, snapshot_from_pykis
+응답 필드명은 공식 예제 리포(koreainvestment/open-trading-api) 기준:
+- 잔고: output1[].pdno/hldg_qty/prpr, output2[0].dnca_tot_amt/tot_evlu_amt
+- 일봉: output2[].stck_bsop_date/stck_clpr
+실제 서버 응답 재확인은 tools/smoke_kis.py (모의투자).
+"""
+from broker.kis import Fill, KisBroker, closes_from_chart, snapshot_from_balance
 
 
-def test_snapshot_mapping():
-    b = SimpleNamespace(
-        deposits={'KRW': SimpleNamespace(amount=500000)},
-        stocks=[SimpleNamespace(symbol='005930', qty=3, price=70000),
-                SimpleNamespace(symbol='069500', qty=10, price=40000)],
-    )
-    s = snapshot_from_pykis(b)
-    assert s.cash == 500000
+def test_snapshot_from_balance_real_fields():
+    output1 = [
+        {'pdno': '005930', 'hldg_qty': '3', 'prpr': '70000', 'prdt_name': '삼성전자'},
+        {'pdno': '069500', 'hldg_qty': '10', 'prpr': '40000', 'prdt_name': 'KODEX 200'},
+        # 당일 전량매도 잔고는 D-2까지 수량 0으로 잔존 (공식 문서) -> 제외돼야 함
+        {'pdno': '000660', 'hldg_qty': '0', 'prpr': '200000', 'prdt_name': 'SK하이닉스'},
+    ]
+    output2 = [{'dnca_tot_amt': '500000', 'tot_evlu_amt': '1110000'}]
+    s = snapshot_from_balance(output1, output2)
+    assert s.cash == 500000.0
     assert s.holdings == {'005930': (3, 70000.0), '069500': (10, 40000.0)}
-    assert s.total == 500000 + 3 * 70000 + 10 * 40000
+    assert s.total == 1110000.0
 
 
-def test_fill_price_fallback():
-    order_no_price = SimpleNamespace(price=None, executed_qty=3)
-    assert extract_fill_price(order_no_price, current_price=71000.0) == 71000.0
-    order_with_price = SimpleNamespace(price=70500, executed_qty=3)
-    assert extract_fill_price(order_with_price, current_price=71000.0) == 70500.0
-    order_zero = SimpleNamespace(price=0, executed_qty=3)
-    assert extract_fill_price(order_zero, current_price=71000.0) == 71000.0
+def test_snapshot_total_fallback_when_missing():
+    output1 = [{'pdno': '005930', 'hldg_qty': '2', 'prpr': '70000'}]
+    output2 = [{'dnca_tot_amt': '500000'}]  # tot_evlu_amt 누락 시 현금+평가 합산 폴백
+    s = snapshot_from_balance(output1, output2)
+    assert s.total == 500000.0 + 140000.0
 
 
-class _FakeQuote:
-    def __init__(self, price):
-        self.price = price
+def test_closes_from_chart_sorted_dedup_skips_blank():
+    rows = [
+        {'stck_bsop_date': '20260811', 'stck_clpr': '71000'},
+        {'stck_bsop_date': '20260810', 'stck_clpr': '70000'},
+        {'stck_bsop_date': '20260811', 'stck_clpr': '71000'},  # 중복
+        {'stck_bsop_date': '', 'stck_clpr': ''},  # KIS 패딩 빈 행
+    ]
+    s = closes_from_chart(rows)
+    assert list(s.values) == [70000.0, 71000.0]
+    assert s.index[0] < s.index[1]
 
 
-class _FakeStock:
-    """order(=buy/sell)와 quote(=current_price)를 독립적으로 성공/실패시킬 수 있는 더블.
+def make_broker(order_raises=False, price=71000.0, price_raises=False):
+    """__init__(토큰 발급) 우회하고 I/O 지점만 페이크 주입"""
+    b = KisBroker.__new__(KisBroker)
+    b.mode = 'paper'
+    b.cano, b.prdt = '12345678', '01'
+    b.quote_calls = 0
 
-    quote_calls로 current_price()가 호출됐는지(=지연 호출 준수 여부) 검증한다.
-    """
+    def fake_request(method, path, tr_id, params=None, body=None, tr_cont=''):
+        if order_raises:
+            raise RuntimeError('모의투자 장운영시간이 아닙니다')
+        b.last_order = (tr_id, body)
+        return {'rt_cd': '0', 'output': {'ODNO': '0000117057'}}
 
-    def __init__(self, order=None, order_exc=None, quote_price=None, quote_exc=None):
-        self._order = order
-        self._order_exc = order_exc
-        self._quote_price = quote_price
-        self._quote_exc = quote_exc
-        self.quote_calls = 0
+    def fake_price(code):
+        b.quote_calls += 1
+        if price_raises:
+            raise RuntimeError('quote fail')
+        return price
 
-    def buy(self, qty):
-        if self._order_exc:
-            raise self._order_exc
-        return self._order
-
-    def sell(self, qty):
-        return self.buy(qty)
-
-    def quote(self):
-        self.quote_calls += 1
-        if self._quote_exc:
-            raise self._quote_exc
-        return _FakeQuote(self._quote_price)
-
-
-class _FakeKis:
-    def __init__(self, stock):
-        self._stock = stock
-
-    def stock(self, code):
-        return self._stock
-
-
-def _make_broker(stock):
-    b = KisBroker.__new__(KisBroker)  # __init__ 우회 — pykis 접속 없이 순수 로직만 검증
-    b.kis = _FakeKis(stock)
+    b._request = fake_request
+    b.current_price = fake_price
     return b
 
 
-def test_market_order_success_with_price_skips_current_price_lookup():
-    order = SimpleNamespace(price=70500, executed_qty=3)
-    stock = _FakeStock(order=order)
-    b = _make_broker(stock)
-    fill = b.market_order('005930', 'BUY', 3)
-    assert fill == Fill('005930', 'BUY', 3, 70500.0, ok=True)
-    assert stock.quote_calls == 0  # current_price는 지연 호출 — 가격 있으면 아예 안 부름
+def test_market_order_success_uses_current_price():
+    # KIS 주문응답엔 체결가가 없음(주문번호만) -> 항상 현재가로 기록
+    b = make_broker()
+    f = b.market_order('005930', 'BUY', 3)
+    assert f == Fill('005930', 'BUY', 3, 71000.0, ok=True)
+    assert b.quote_calls == 1
+    tr_id, body = b.last_order
+    assert tr_id == 'VTTC0012U'  # 모의 매수
+    assert body['ORD_DVSN'] == '01' and body['ORD_UNPR'] == '0'  # 시장가
+    assert body['ORD_QTY'] == '3' and body['PDNO'] == '005930'
 
 
-def test_market_order_success_price_missing_and_current_price_fails_stays_ok():
-    order = SimpleNamespace(price=None, executed_qty=3)
-    stock = _FakeStock(order=order, quote_exc=RuntimeError('quote timeout'))
-    b = _make_broker(stock)
-    fill = b.market_order('005930', 'BUY', 3)
-    assert fill.ok is True  # 주문은 이미 성공 — 사후 가격조회 실패로 뒤집으면 안 됨
-    assert fill.price == 0.0
-    assert fill.reason == 'price_lookup_failed'
-    assert stock.quote_calls == 1
+def test_market_order_sell_tr_id():
+    b = make_broker()
+    b.market_order('005930', 'SELL', 2)
+    assert b.last_order[0] == 'VTTC0011U'  # 모의 매도
+
+
+def test_market_order_price_lookup_fail_stays_ok():
+    b = make_broker(price_raises=True)
+    f = b.market_order('005930', 'BUY', 3)
+    assert f.ok is True and f.price == 0.0 and f.reason == 'price_lookup_failed'
 
 
 def test_market_order_order_itself_fails_returns_not_ok():
-    stock = _FakeStock(order_exc=RuntimeError('order rejected'))
-    b = _make_broker(stock)
-    fill = b.market_order('005930', 'BUY', 3)
-    assert fill.ok is False
-    assert fill.price == 0.0
-    assert 'order rejected' in fill.reason
+    b = make_broker(order_raises=True)
+    f = b.market_order('005930', 'BUY', 3)
+    assert f.ok is False and '장운영시간' in f.reason
+    assert b.quote_calls == 0  # 주문 실패 시 시세조회 안 함

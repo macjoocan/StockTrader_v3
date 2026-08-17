@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""KIS 모의투자 스모크: pykis 콜사이트 3곳 검증 (잔고/일봉/현재가 — 주문은 수동확인 후).
+"""KIS 모의투자 스모크: 공식 REST 콜사이트 3곳 검증 (잔고/일봉/현재가 — 주문은 수동확인 후).
+   응답 필드명(pdno/hldg_qty/dnca_tot_amt/stck_clpr/stck_prpr) 실서버 재확인 목적.
    사전조건: 환경변수로 export 필요 (스크립트는 os.environ만 읽음; docker-compose 경유 시
    env_file이 주입). 실행: python tools/smoke_kis.py"""
 import os

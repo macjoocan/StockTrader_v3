@@ -1,6 +1,9 @@
-REQUIRED = ['KIS_ID', 'KIS_ACCOUNT', 'KIS_APPKEY', 'KIS_SECRET',
+# KIS_ID(HTS ID)는 REST엔 불필요 — 웹소켓 체결통보(ccnl_notice) 도입 시에만 필요
+# KIS_MODE: paper(기본)|live — 모의/실전 도메인·TR·키 전환 (broker/kis.py)
+REQUIRED = ['KIS_ACCOUNT', 'KIS_APPKEY', 'KIS_SECRET',
             'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID', 'DATA_DIR']
-OPTIONAL = ['KIS_VIRTUAL_ID', 'KIS_VIRTUAL_APPKEY', 'KIS_VIRTUAL_SECRET']
+OPTIONAL = ['KIS_ID', 'KIS_MODE',
+            'KIS_VIRTUAL_ID', 'KIS_VIRTUAL_APPKEY', 'KIS_VIRTUAL_SECRET']
 
 
 def load_config(environ: dict) -> dict:
