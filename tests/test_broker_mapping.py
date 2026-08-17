@@ -132,6 +132,60 @@ def test_daily_closes_stops_on_empty_page():
     assert s.empty
 
 
+def test_request_retries_transient_5xx(monkeypatch):
+    import broker.kis as kis_mod
+    b = KisBroker.__new__(KisBroker)
+    b.mode = 'paper'
+    b.appkey, b.secret = 'k', 's'
+    b._token = lambda: 'T'
+    monkeypatch.setattr(kis_mod.time, 'sleep', lambda *_: None)  # 백오프/유량지연 스킵
+
+    class Resp:
+        def __init__(self, status, body=None):
+            self.status_code = status
+            self._body = body or {}
+            self.headers = {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._body
+
+    responses = [Resp(500), Resp(200, {'rt_cd': '0', 'output': {'x': 1}})]
+    monkeypatch.setattr(kis_mod.requests, 'get',
+                        lambda *a, **k: responses.pop(0))
+    data = b._request('GET', '/p', 'TR')  # 1차 500 -> 재시도 성공
+    assert data['output'] == {'x': 1}
+
+
+def test_request_business_error_no_retry(monkeypatch):
+    import broker.kis as kis_mod
+    b = KisBroker.__new__(KisBroker)
+    b.mode = 'paper'
+    b.appkey, b.secret = 'k', 's'
+    b._token = lambda: 'T'
+    monkeypatch.setattr(kis_mod.time, 'sleep', lambda *_: None)
+    calls = []
+
+    class Resp:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {'rt_cd': '1', 'msg_cd': 'OPSQ2000', 'msg1': 'INVALID_CHECK_ACNO'}
+
+    monkeypatch.setattr(kis_mod.requests, 'get',
+                        lambda *a, **k: calls.append(1) or Resp())
+    import pytest
+    with pytest.raises(RuntimeError, match='INVALID_CHECK_ACNO'):
+        b._request('GET', '/p', 'TR')
+    assert len(calls) == 1  # 비즈니스 거부는 재시도 없음
+
+
 def test_balance_continuation_accumulates_and_forwards_ctx():
     b = KisBroker.__new__(KisBroker)
     b.mode, b.cano, b.prdt = 'paper', '12345678', '01'

@@ -142,6 +142,8 @@ class KisBroker:
 
     def _request(self, method: str, path: str, tr_id: str,
                  params=None, body=None, tr_cont=''):
+        """일시 장애(5xx/타임아웃/유량초과)는 짧은 재시도. 비즈니스 거부(rt_cd!=0)는 즉시 raise.
+        모의(VTS) 서버가 간헐적으로 500을 뱉는 실측 사례 있음 (2026-08-17 스모크)."""
         headers = {
             'authorization': f'Bearer {self._token()}',
             'appkey': self.appkey, 'appsecret': self.secret,
@@ -150,17 +152,33 @@ class KisBroker:
         if tr_cont:
             headers['tr_cont'] = tr_cont
         url = DOMAIN[self.mode] + path
-        if method == 'GET':
-            r = requests.get(url, headers=headers, params=params, timeout=10)
-        else:
-            r = requests.post(url, headers=headers, json=body, timeout=10)
-        time.sleep(CALL_DELAY[self.mode])
-        r.raise_for_status()
-        data = r.json()
-        if data.get('rt_cd') != '0':
-            raise RuntimeError(f"KIS {tr_id} 실패: {data.get('msg_cd')} {data.get('msg1')}")
-        data['_tr_cont'] = r.headers.get('tr_cont', '')
-        return data
+        last_err = None
+        for attempt in range(3):
+            if attempt:
+                time.sleep(attempt)  # 1s, 2s 백오프
+            try:
+                if method == 'GET':
+                    r = requests.get(url, headers=headers, params=params, timeout=10)
+                else:
+                    r = requests.post(url, headers=headers, json=body, timeout=10)
+            except requests.exceptions.RequestException as e:
+                last_err = e
+                continue
+            time.sleep(CALL_DELAY[self.mode])
+            if r.status_code >= 500:
+                last_err = RuntimeError(f'KIS {tr_id} HTTP {r.status_code} (transient)')
+                continue
+            r.raise_for_status()
+            data = r.json()
+            if data.get('rt_cd') != '0':
+                msg = f"{data.get('msg_cd')} {data.get('msg1')}"
+                if '초당' in (data.get('msg1') or ''):  # 유량 초과는 재시도
+                    last_err = RuntimeError(f'KIS {tr_id} 유량초과: {msg}')
+                    continue
+                raise RuntimeError(f'KIS {tr_id} 실패: {msg}')
+            data['_tr_cont'] = r.headers.get('tr_cont', '')
+            return data
+        raise last_err
 
     # ---- 조회 ----
 
