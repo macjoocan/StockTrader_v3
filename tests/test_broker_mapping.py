@@ -186,6 +186,47 @@ def test_request_business_error_no_retry(monkeypatch):
     assert len(calls) == 1  # 비즈니스 거부는 재시도 없음
 
 
+def _token_broker(tmp_path, expires_in_sec):
+    import time as _t
+    b = KisBroker.__new__(KisBroker)
+    b.mode, b.appkey, b.secret = 'paper', 'k', 's'
+    b.data_dir = tmp_path
+    b._token_memo = {'token': 'OLD', 'expires_at': _t.time() + expires_in_sec}
+    return b
+
+
+def test_ensure_token_noop_when_fresh(tmp_path, monkeypatch):
+    import broker.kis as kis_mod
+    b = _token_broker(tmp_path, expires_in_sec=7200)  # 2시간 남음
+    monkeypatch.setattr(kis_mod.requests, 'post',
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError('재발급 불필요')))
+    assert b.ensure_token(min_left=3600) is True  # 발급 호출 없이 통과
+
+
+def test_ensure_token_reissues_when_expiring(tmp_path, monkeypatch):
+    import broker.kis as kis_mod
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {'access_token': 'NEW', 'expires_in': 86400}
+
+    b = _token_broker(tmp_path, expires_in_sec=1800)  # 30분 남음 -> 재발급 대상
+    monkeypatch.setattr(kis_mod.requests, 'post', lambda *a, **k: Resp())
+    assert b.ensure_token(min_left=3600) is True
+    assert b._token_memo['token'] == 'NEW'
+
+
+def test_ensure_token_swallows_failure(tmp_path, monkeypatch):
+    import broker.kis as kis_mod
+    b = _token_broker(tmp_path, expires_in_sec=1800)
+    monkeypatch.setattr(kis_mod.requests, 'post',
+                        lambda *a, **k: (_ for _ in ()).throw(OSError('timeout')))
+    assert b.ensure_token(min_left=3600) is False  # 예외 삼킴, 다음 heartbeat 재시도
+
+
 def test_balance_continuation_accumulates_and_forwards_ctx():
     b = KisBroker.__new__(KisBroker)
     b.mode, b.cano, b.prdt = 'paper', '12345678', '01'

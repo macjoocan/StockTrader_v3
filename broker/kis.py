@@ -27,6 +27,9 @@ DOMAIN = {
 }
 # 유량 제한: 실전 20건/초, 모의 2건/초 (공식 문서) -> 호출 간 지연
 CALL_DELAY = {'live': 0.06, 'paper': 0.55}
+# (connect, read) — VTS가 장마감 동시호가 시간대(15:19~15:30)에 read 10초를 넘기는 실측 사례
+# (8/20~21 이틀 연속 일일작업 실패) -> read 30초로 상향
+TIMEOUT = (5, 30)
 
 PATH_BALANCE = '/uapi/domestic-stock/v1/trading/inquire-balance'
 PATH_ORDER = '/uapi/domestic-stock/v1/trading/order-cash'
@@ -105,15 +108,25 @@ class KisBroker:
 
     # ---- 인증 ----
 
-    def _token(self) -> str:
-        # 1) 인메모리 -> 2) 파일캐시 -> 3) 재발급 (KIS 토큰 발급 유량 제한 있음)
+    def ensure_token(self, min_left: int = 3600) -> bool:
+        """토큰 선제 갱신 (heartbeat에서 호출). 만료까지 min_left 미만이면 재발급.
+        목적: 일일작업(15:19~) 크리티컬 경로에서 토큰 발급을 제거 — 그 시간대 VTS 지연으로
+        발급이 timeout되면 하루가 통째로 스킵되는 실측 사례(8/20~21) 방지."""
+        try:
+            self._token(min_left)
+            return True
+        except Exception:
+            return False
+
+    def _token(self, min_left: int = 600) -> str:
+        # 1) 인메모리 -> 2) 파일캐시 -> 3) 재발급 (KIS 토큰 발급 1분당 1회 제한)
         memo = getattr(self, '_token_memo', None)
-        if memo and memo['expires_at'] > time.time() + 600:
+        if memo and memo['expires_at'] > time.time() + min_left:
             return memo['token']
         cache = self.data_dir / f'kis_token_{self.mode}.json'
         try:
             saved = json.loads(cache.read_text(encoding='utf-8'))
-            if saved['expires_at'] > time.time() + 600:
+            if saved['expires_at'] > time.time() + min_left:
                 self._token_memo = saved
                 return saved['token']
         except (OSError, ValueError, KeyError):
@@ -122,7 +135,7 @@ class KisBroker:
             DOMAIN[self.mode] + '/oauth2/tokenP',
             json={'grant_type': 'client_credentials',
                   'appkey': self.appkey, 'appsecret': self.secret},
-            timeout=10)
+            timeout=TIMEOUT)
         r.raise_for_status()
         body = r.json()
         saved = {'token': body['access_token'],
@@ -158,9 +171,9 @@ class KisBroker:
                 time.sleep(attempt)  # 1s, 2s 백오프
             try:
                 if method == 'GET':
-                    r = requests.get(url, headers=headers, params=params, timeout=10)
+                    r = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
                 else:
-                    r = requests.post(url, headers=headers, json=body, timeout=10)
+                    r = requests.post(url, headers=headers, json=body, timeout=TIMEOUT)
             except requests.exceptions.RequestException as e:
                 last_err = e
                 continue

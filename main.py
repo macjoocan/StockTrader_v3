@@ -49,6 +49,9 @@ def main():
             if action == 'heartbeat':
                 print(f'[{now:%F %T}] heartbeat 보유 {len(state["positions"])}')
                 last_hb = now
+                # 토큰 선제 갱신 — 일일작업 직전(15:19~)에 발급할 일이 없도록 (VTS 그 시간대 지연 실측)
+                if not broker.ensure_token():
+                    print(f'[{now:%F %T}] 토큰 선제갱신 실패 (다음 heartbeat에 재시도)', flush=True)
             elif action == 'trade':
                 # 스펙 §2: 동시호가(15:20~30) 제출 — 15:20:30까지 대기 후 실행
                 target = now.replace(hour=15, minute=20, second=30, microsecond=0)
@@ -63,7 +66,8 @@ def main():
                                       notifier, do_rebalance=do_rebal)
                             break
                         except Exception as e:
-                            print(f'[{now:%F %T}] 일일작업 재시도 {attempt+1}/3: {e}')
+                            print(f'[{datetime.now(KST):%F %T}] 일일작업 재시도 {attempt+1}/3: {e}',
+                                  flush=True)
                             time.sleep(10)
                     else:
                         notifier.send('❌ 일일작업 3회 실패 — 오늘 스킵')
