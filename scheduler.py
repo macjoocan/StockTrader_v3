@@ -2,7 +2,9 @@ from datetime import date, datetime, time
 
 TRADE_TIME = time(15, 19)
 TRADE_CUTOFF = time(15, 25)  # 이 이후엔 장외 시장가 발사 위험 -> trade 스킵 (finding #1)
-HEARTBEAT_SEC = 300
+# 240s: watchdog의 STALE 판정 창(5분 내 로그)과 heartbeat 간격이 같으면 경계 레이스
+# -> 창보다 짧게 유지해 5분 창에 항상 로그 1개 이상 보장
+HEARTBEAT_SEC = 240
 
 
 def next_action(now: datetime, last_hb: datetime | None,

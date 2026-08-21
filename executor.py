@@ -104,8 +104,11 @@ def run_daily(broker, universe, state, today, log, notifier, do_rebalance):
     state['last_trade_date'] = today
     summary = {'signals': len(intents), 'fills': len(fills), 'fails': len(fails),
                'positions': len(state['positions']), 'total': snap.total}
+    pos_lines = ''.join(
+        f"\n· {code} {p['qty']}주 @{p['entry_price']:,.0f}"
+        for code, p in sorted(state['positions'].items()))
     notifier.send(f"📊 {today} 신호{summary['signals']} 체결{summary['fills']} "
-                  f"실패{summary['fails']} 보유{summary['positions']} "
-                  f"평가 {snap.total:,.0f}원")
+                  f"실패{summary['fails']} 보유{summary['positions']}/4 "
+                  f"평가 {snap.total:,.0f}원{pos_lines}")
     log.write('daily_summary', **summary)
     return summary

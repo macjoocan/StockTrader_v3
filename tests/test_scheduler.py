@@ -23,11 +23,12 @@ def test_no_trade_before_1519():
     assert next_action(MON_1000, MON_1000, None) == 'sleep'
 
 
-def test_heartbeat_every_5min():
+def test_heartbeat_every_4min():
+    # 240s 간격 (watchdog 5분 STALE 창보다 짧게 — 경계 레이스 방지)
     assert next_action(MON_1000, last_hb=None, last_trade_date=None) == 'heartbeat'
-    early = datetime(2026, 8, 10, 9, 56)
+    early = datetime(2026, 8, 10, 9, 57)  # 180s 경과
     assert next_action(MON_1000, last_hb=early, last_trade_date=None) == 'sleep'
-    old = datetime(2026, 8, 10, 9, 54)
+    old = datetime(2026, 8, 10, 9, 55)  # 300s 경과
     assert next_action(MON_1000, last_hb=old, last_trade_date=None) == 'heartbeat'
 
 
@@ -51,10 +52,10 @@ def test_trade_at_exact_1519():
     assert next_action(mon_1519_exact, mon_1519_exact, None) == 'trade'
 
 
-def test_heartbeat_at_exact_300sec():
-    """Boundary: exactly 300 seconds elapsed triggers heartbeat."""
-    now = datetime(2026, 8, 10, 10, 5, 0)  # 10:05:00
-    old_hb = datetime(2026, 8, 10, 10, 0, 0)  # 10:00:00 (300 sec ago)
+def test_heartbeat_at_exact_240sec():
+    """Boundary: 정확히 HEARTBEAT_SEC(240초) 경과 시 heartbeat."""
+    now = datetime(2026, 8, 10, 10, 4, 0)  # 10:04:00
+    old_hb = datetime(2026, 8, 10, 10, 0, 0)  # 240초 전
     assert next_action(now, old_hb, None) == 'heartbeat'
 
 
