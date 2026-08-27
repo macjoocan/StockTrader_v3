@@ -79,6 +79,25 @@ def test_realized_trades_fifo_excludes_core():
     assert t['buy_day'] == '2026-08-18' and t['sell_day'] == '2026-08-25'
 
 
+def test_valuation_row_parses_and_defends():
+    from dashboard_data import valuation_row
+    v = valuation_row({'stck_prpr': '192300', 'per': '58.30', 'pbr': '0',
+                       'w52_hgpr': '215000', 'w52_lwpr': '140000', 'eps': ''})
+    assert v['cur'] == 192300.0 and v['per'] == 58.3
+    assert v['pbr'] is None and v['eps'] is None  # '0'/빈값 -> None
+    assert 0 < v['w52_band'] < 1
+    empty = valuation_row({})
+    assert empty['cur'] is None and empty['w52_band'] is None
+
+
+def test_fin_rows_labels_and_missing():
+    from dashboard_data import fin_rows
+    rows = fin_rows([{'stac_yymm': '202512', 'roe_val': '8.1', 'lblt_rate': ''}])
+    assert rows[0]['결산'] == '202512' and rows[0]['ROE%'] == '8.1'
+    assert rows[0]['부채비율%'] == '—'
+    assert fin_rows(None) == []
+
+
 def test_gate_status():
     g = gate_status(date(2026, 8, 22))
     assert g['d_left'] == 23 and g['over'] is False

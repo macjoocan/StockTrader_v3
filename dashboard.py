@@ -18,8 +18,9 @@ from flask import Flask
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, str(Path(__file__).parent))
 
-from dashboard_data import (CORE_CODE, enrich_positions, gate_status,  # noqa: E402
-                            indexed_pair, ops_report, radar_rows, realized_trades)
+from dashboard_data import (CORE_CODE, enrich_positions, fin_rows,  # noqa: E402
+                            gate_status, indexed_pair, ops_report, radar_rows,
+                            realized_trades, valuation_row)
 
 KST = timezone(timedelta(hours=9))
 DATA_DIR = Path(os.environ.get('DATA_DIR') or './data-volume')
@@ -28,6 +29,27 @@ C_ACCT, C_KODEX = '#3f7fc9', '#bd8137'
 
 app = Flask(__name__)
 CACHE = None  # MarketCache — main에서만 기동 (테스트는 None)
+
+
+def _load_names() -> dict:
+    try:
+        u = json.loads((Path(__file__).parent / 'data' / 'universe_2026.json')
+                       .read_text(encoding='utf-8'))
+        return u.get('names') or {}
+    except (OSError, ValueError):
+        return {}
+
+
+NAMES = _load_names()
+
+
+def nm(code: str) -> str:
+    return NAMES.get(code) or code
+
+
+def stk_link(code: str) -> str:
+    return (f'<a class="stk" href="/stock/{html.escape(code)}">{html.escape(nm(code))}'
+            f' <span class="muted small">{html.escape(code)}</span></a>')
 
 
 # ---- 파일 데이터 (기존) ----
@@ -72,6 +94,7 @@ def svg_chart(series_map: dict, colors: dict, w: int = 760, h: int = 230, pad: i
     series_map = {k: v for k, v in series_map.items() if v}
     if not series_map or all(len(v) < 2 for v in series_map.values()):
         return '<div class="empty">데이터 2일 이상 쌓이면 표시됩니다</div>'
+    show_legend = len(series_map) >= 2  # 단일 시리즈는 제목이 정체를 말함 (범례 생략)
     days = sorted({d for pts in series_map.values() for d, _ in pts})
     vals = [v for pts in series_map.values() for _, v in pts]
     lo, hi = min(vals), max(vals)
@@ -101,7 +124,8 @@ def svg_chart(series_map: dict, colors: dict, w: int = 760, h: int = 230, pad: i
         for f in (0, 0.5, 1))
     payload = html.escape(json.dumps({'days': days, 'series': {
         k: dict(v) for k, v in series_map.items()}}, ensure_ascii=False), quote=True)
-    return f'''<div class="legendrow">{''.join(legend)}</div>
+    legend_html = f'<div class="legendrow">{"".join(legend)}</div>' if show_legend else ''
+    return f'''{legend_html}
 <svg class="chart" viewBox="0 0 {w} {h}" data-chart="{payload}" data-pad="{pad}"
      data-lo="{lo}" data-hi="{hi}" role="img" aria-label="추이 차트">
   {grid}{''.join(body)}
@@ -168,7 +192,7 @@ def render_page(cache=None) -> str:
     # -- 포지션 --
     pos_rows = enrich_positions(state['positions'], closes, today=now.date())
     pos_html = ''.join(
-        f"<tr><td>{r['code']}</td><td class='num'>{r['qty']}</td>"
+        f"<tr><td>{stk_link(r['code'])}</td><td class='num'>{r['qty']}</td>"
         f"<td class='num'>{r['entry']:,.0f}</td><td class='num'>{won(r['cur'])}</td>"
         f"<td class='num {cls_pnl(r['pnl'])}'>{won(r['pnl'])}</td>"
         f"<td class='num {cls_pnl(r['pnl_pct'])}'>{pct(r['pnl_pct'])}</td>"
@@ -184,7 +208,7 @@ def render_page(cache=None) -> str:
         sig = ' <span class="badge crit">신호권</span>' if r['signal'] else ''
         sma_txt = '위' if r['above_sma200'] else ('아래' if r['above_sma200'] is not None else '—')
         pin = ' 📌' if r['holding'] else ''
-        return (f"<tr><td>{r['code']}{pin}</td><td class='num'>{r['cur']:,.0f}</td>"
+        return (f"<tr><td>{stk_link(r['code'])}{pin}</td><td class='num'>{r['cur']:,.0f}</td>"
                 f"<td class='num {cls_pnl(r['chg'])}'>{pct(r['chg'])}</td>"
                 f"<td class='num'>{rsi_txt}{sig}</td><td>{sma_txt}</td></tr>")
 
@@ -196,7 +220,7 @@ def render_page(cache=None) -> str:
     if trades:
         tr_sum = sum(t['pnl'] for t in trades)
         trades_html = ''.join(
-            f"<tr><td>{t['code']}</td><td class='num'>{t['qty']}</td>"
+            f"<tr><td>{stk_link(t['code'])}</td><td class='num'>{t['qty']}</td>"
             f"<td>{t['buy_day']} → {t['sell_day']}</td>"
             f"<td class='num'>{t['buy']:,.0f} → {t['sell']:,.0f}</td>"
             f"<td class='num {cls_pnl(t['pnl'])}'>{won(t['pnl'])} ({pct(t['pnl_pct'])})</td></tr>"
@@ -235,37 +259,7 @@ def render_page(cache=None) -> str:
     return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="120"><title>Stock Trader</title>
 <style>
-:root {{ --bg:#0e1420; --card:#161e2e; --ink:#e6ebf4; --ink2:#9aa7bd; --muted:#5f6b81;
-        --grid:#243048; --good:#3fb970; --warn:#d9a13b; --crit:#e0605e; --info:#5ba3f5; }}
-* {{ box-sizing:border-box; margin:0; }}
-body {{ background:var(--bg); color:var(--ink); font:14px/1.5 'Malgun Gothic',sans-serif; padding:20px; }}
-h1 {{ font-size:18px; margin-bottom:4px; }} h2 {{ font-size:14px; color:var(--ink2); margin:0 0 10px; }}
-.sub {{ color:var(--muted); font-size:12px; margin-bottom:16px; }}
-.cards {{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }}
-.card {{ background:var(--card); border-radius:10px; padding:12px 16px; min-width:135px; }}
-.card .k {{ color:var(--ink2); font-size:11px; }} .card .v {{ font-size:18px; font-weight:700; margin-top:2px; }}
-.panel {{ background:var(--card); border-radius:10px; padding:16px; margin-bottom:16px; overflow-x:auto; }}
-table {{ border-collapse:collapse; width:100%; }} th,td {{ padding:6px 10px; text-align:left; font-size:13px; }}
-th {{ color:var(--ink2); border-bottom:1px solid var(--grid); font-weight:600; }}
-td {{ border-bottom:1px solid #1d2739; }} .num {{ text-align:right; font-variant-numeric:tabular-nums; }}
-.muted {{ color:var(--muted); }} .detail {{ color:var(--ink2); font-size:12px; }}
-.empty {{ color:var(--muted); text-align:center; padding:14px; }}
-.pos {{ color:var(--good); }} .neg {{ color:var(--crit); }} .warn2 {{ color:var(--warn); }}
-.badge {{ padding:1px 8px; border-radius:8px; font-size:12px; }}
-.badge.good {{ background:#173527; color:var(--good); }} .badge.crit {{ background:#3a1d1d; color:var(--crit); }}
-.badge.warn {{ background:#37301a; color:var(--warn); }} .badge.info {{ background:#182c44; color:var(--info); }}
-.badge.muted {{ background:#222b3d; color:var(--ink2); }}
-svg.chart {{ width:100%; height:auto; display:block; }}
-.line {{ fill:none; stroke-width:2; }} .grid {{ stroke:var(--grid); stroke-width:1; }}
-.axis {{ fill:var(--muted); font-size:10px; }} .lastlabel {{ fill:var(--ink); font-size:11px; font-weight:700; }}
-.crosshair {{ stroke:var(--muted); stroke-dasharray:3 3; }}
-.legendrow {{ margin-bottom:6px; }} .lg {{ margin-right:14px; font-size:12px; color:var(--ink2); }}
-.lg i {{ display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; }}
-.ops {{ color:var(--ink2); font-size:13px; }}
-.tip {{ position:fixed; background:#0b111c; border:1px solid var(--grid); border-radius:6px;
-       padding:6px 10px; font-size:12px; pointer-events:none; z-index:9; white-space:pre; }}
-.two {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
-@media (max-width:900px) {{ .two {{ grid-template-columns:1fr; }} }}
+{BASE_STYLE}{STYLE_EXTRA}
 </style></head><body>
 <h1>📈 Stock Trader <span class="badge {'warn' if mode == 'paper' else 'crit'}">{'모의투자' if mode == 'paper' else '실전'}</span></h1>
 <div class="sub">코어 70% KODEX200 + 새틀 30% RSI2 딥바잉 · 페이지 {now:%m-%d %H:%M} ·
@@ -288,34 +282,153 @@ svg.chart {{ width:100%; height:auto; display:block; }}
 <div class="panel"><h2>최근 이벤트</h2>
 <table><tr><th>시각</th><th>구분</th><th>내용</th></tr>{ev_html}</table></div>
 <div id="tip" class="tip" hidden></div>
-<script>
-document.querySelectorAll('svg.chart').forEach(svg => {{
+<script>{CHART_JS}</script>
+</body></html>'''
+
+
+BASE_STYLE = '''
+:root { --bg:#0e1420; --card:#161e2e; --ink:#e6ebf4; --ink2:#9aa7bd; --muted:#5f6b81;
+        --grid:#243048; --good:#3fb970; --warn:#d9a13b; --crit:#e0605e; --info:#5ba3f5; }
+* { box-sizing:border-box; margin:0; }
+body { background:var(--bg); color:var(--ink); font:14px/1.5 'Malgun Gothic',sans-serif; padding:20px; }
+h1 { font-size:18px; margin-bottom:4px; } h2 { font-size:14px; color:var(--ink2); margin:0 0 10px; }
+.sub { color:var(--muted); font-size:12px; margin-bottom:16px; }
+.cards { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+.card { background:var(--card); border-radius:10px; padding:12px 16px; min-width:135px; }
+.card .k { color:var(--ink2); font-size:11px; } .card .v { font-size:18px; font-weight:700; margin-top:2px; }
+.panel { background:var(--card); border-radius:10px; padding:16px; margin-bottom:16px; overflow-x:auto; }
+table { border-collapse:collapse; width:100%; } th,td { padding:6px 10px; text-align:left; font-size:13px; }
+th { color:var(--ink2); border-bottom:1px solid var(--grid); font-weight:600; }
+td { border-bottom:1px solid #1d2739; } .num { text-align:right; font-variant-numeric:tabular-nums; }
+.muted { color:var(--muted); } .detail { color:var(--ink2); font-size:12px; }
+.empty { color:var(--muted); text-align:center; padding:14px; }
+.pos { color:var(--good); } .neg { color:var(--crit); } .warn2 { color:var(--warn); }
+.badge { padding:1px 8px; border-radius:8px; font-size:12px; }
+.badge.good { background:#173527; color:var(--good); } .badge.crit { background:#3a1d1d; color:var(--crit); }
+.badge.warn { background:#37301a; color:var(--warn); } .badge.info { background:#182c44; color:var(--info); }
+.badge.muted { background:#222b3d; color:var(--ink2); }
+svg.chart { width:100%; height:auto; display:block; }
+.line { fill:none; stroke-width:2; } .grid { stroke:var(--grid); stroke-width:1; }
+.axis { fill:var(--muted); font-size:10px; } .lastlabel { fill:var(--ink); font-size:11px; font-weight:700; }
+.crosshair { stroke:var(--muted); stroke-dasharray:3 3; }
+.legendrow { margin-bottom:6px; } .lg { margin-right:14px; font-size:12px; color:var(--ink2); }
+.lg i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; }
+.ops { color:var(--ink2); font-size:13px; }
+.tip { position:fixed; background:#0b111c; border:1px solid var(--grid); border-radius:6px;
+       padding:6px 10px; font-size:12px; pointer-events:none; z-index:9; white-space:pre; }
+.two { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+@media (max-width:900px) { .two { grid-template-columns:1fr; } }
+'''
+
+STYLE_EXTRA = '''
+.stk { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--muted); }
+.small { font-size: 11px; }
+.back { color: var(--info); text-decoration: none; font-size: 13px; }
+'''
+
+CHART_JS = r'''
+document.querySelectorAll('svg.chart').forEach(svg => {
   const cfg = JSON.parse(svg.dataset.chart), pad = +svg.dataset.pad;
-  const lo = +svg.dataset.lo, hi = +svg.dataset.hi, span = (hi - lo) || 1;
   const vb = svg.viewBox.baseVal, tip = document.getElementById('tip');
   const xh = svg.querySelector('.xh'), days = cfg.days, nx = Math.max(days.length - 1, 1);
-  svg.addEventListener('mousemove', ev => {{
+  svg.addEventListener('mousemove', ev => {
     const r = svg.getBoundingClientRect();
     const mx = (ev.clientX - r.left) * vb.width / r.width;
     const i = Math.max(0, Math.min(days.length - 1, Math.round((mx - pad) / ((vb.width - 2 * pad) / nx))));
     const x = pad + (vb.width - 2 * pad) * i / nx;
     xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.removeAttribute('visibility');
     let lines = [days[i]];
-    for (const [name, byDay] of Object.entries(cfg.series)) {{
-      if (byDay[days[i]] !== undefined) lines.push(name + ': ' + byDay[days[i]].toFixed(2));
-    }}
-    tip.hidden = false; tip.textContent = lines.join('\\n');
+    for (const [name, byDay] of Object.entries(cfg.series)) {
+      if (byDay[days[i]] !== undefined) lines.push(name + ': ' + byDay[days[i]].toLocaleString());
+    }
+    tip.hidden = false; tip.textContent = lines.join('\n');
     tip.style.left = (ev.clientX + 14) + 'px'; tip.style.top = (ev.clientY - 10) + 'px';
-  }});
-  svg.addEventListener('mouseleave', () => {{ tip.hidden = true; xh.setAttribute('visibility', 'hidden'); }});
-}});
-</script>
+  });
+  svg.addEventListener('mouseleave', () => { tip.hidden = true; xh.setAttribute('visibility', 'hidden'); });
+});
+'''
+
+
+def render_stock(code: str, cache=None) -> str:
+    """종목 상세: 밸류에이션 + 재무비율 + 기술 상태 + 60일 차트 (Tier 1 기업분석)"""
+    cache = cache if cache is not None else CACHE
+    snap = getattr(cache, 'snapshot', None) or {}
+    name = nm(code)
+    q = (snap.get('quotes') or {}).get(code)
+    val = valuation_row(q) if q else None
+    s = (snap.get('closes') or {}).get(code)
+    state = load_positions(DATA_DIR)
+    held = state['positions'].get(code)
+
+    # 기술 상태
+    tech = '—'
+    if s is not None and len(s) >= 200:
+        from signal_engine.indicators import rsi, sma
+        r2 = float(rsi(s, 2).iloc[-1])
+        above = float(s.iloc[-1]) > float(sma(s, 200).iloc[-1])
+        sig = ' · <span class="badge crit">신호권</span>' if (above and r2 < 10) else ''
+        tech = f"RSI2 {r2:.1f} · SMA200 {'위' if above else '아래'}{sig}"
+
+    def card(k, v, c=''):
+        return f'<div class="card"><div class="k">{k}</div><div class="v {c}">{v}</div></div>'
+
+    if val:
+        band_txt = f"{val['w52_band']*100:.0f}%" if val['w52_band'] is not None else '—'
+        cards = ''.join([
+            card('현재가', won(val['cur']), ''),
+            card('전일대비', pct(val['chg_pct'] / 100 if val['chg_pct'] is not None else None),
+                 cls_pnl(val['chg_pct'])),
+            card('PER', f"{val['per']:.1f}배" if val['per'] else '—'),
+            card('PBR', f"{val['pbr']:.2f}배" if val['pbr'] else '—'),
+            card('EPS', won(val['eps'])), card('BPS', won(val['bps'])),
+            card('시가총액', f"{val['mcap_eok']:,.0f}억" if val['mcap_eok'] else '—'),
+            card('52주 밴드 위치', band_txt),
+            card('외국인 소진율', f"{val['frgn_rate']:.1f}%" if val['frgn_rate'] else '—'),
+        ])
+    else:
+        cards = '<div class="empty">시세 캐시 수집 중 — 잠시 후 새로고침</div>'
+
+    fin = (snap.get('fin') or {}).get(code)
+    frows = fin_rows(fin) if fin else []
+    if frows:
+        heads = ''.join(f'<th class="num">{h}</th>' for h in frows[0])
+        body = ''.join('<tr>' + ''.join(f'<td class="num">{v}</td>' for v in r.values())
+                       + '</tr>' for r in frows)
+        fin_html = f'<table><tr>{heads}</tr>{body}</table>'
+    else:
+        fin_html = ('<div class="empty">재무비율 데이터 없음 '
+                    '(수집 전이거나 모의서버 미지원 — 실전 전환 시 확인)</div>')
+
+    chart = svg_chart({name: [(f'{ts:%Y-%m-%d}', float(v)) for ts, v in s.iloc[-60:].items()]},
+                      {name: C_ACCT}) if s is not None and len(s) else \
+        '<div class="empty">차트 데이터 수집 중</div>'
+    held_html = (f"<span class='badge good'>보유 {held['qty']}주 @{held['entry_price']:,.0f} "
+                 f"({held['entry_date']}~)</span>" if held else '')
+
+    return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="300"><title>{html.escape(name)} — Stock Trader</title>
+<style>{BASE_STYLE}{STYLE_EXTRA}</style></head><body>
+<a class="back" href="/">← 대시보드</a>
+<h1 style="margin-top:8px">{html.escape(name)} <span class="muted">{html.escape(code)}</span> {held_html}</h1>
+<div class="sub">기술 상태: {tech} · 데이터는 참고용 (투자 판단 아님)</div>
+<div class="cards">{cards}</div>
+<div class="panel"><h2>최근 60일 종가</h2>{chart}</div>
+<div class="panel"><h2>재무비율 (연간, KIS 제공)</h2>{fin_html}</div>
+<div id="tip" class="tip" hidden></div>
+<script>{CHART_JS}</script>
 </body></html>'''
 
 
 @app.route('/')
 def index():
     return render_page()
+
+
+@app.route('/stock/<code>')
+def stock_detail(code):
+    if not (code.isdigit() and len(code) == 6):
+        return '잘못된 종목코드', 404
+    return render_stock(code)
 
 
 if __name__ == '__main__':
