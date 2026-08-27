@@ -195,6 +195,18 @@ def test_parse_dart_list_builds_urls():
     assert parse_dart_list({'status': '013'}) == []
 
 
+def test_naver_news_endpoint_hub_first_then_legacy():
+    from dashboard_data import (NAVER_HUB_NEWS_URL, NAVER_NEWS_URL,
+                                naver_news_endpoint)
+    url, h = naver_news_endpoint({'NAVER_HUB_KEY_ID': 'i', 'NAVER_HUB_KEY': 'k',
+                                  'NAVER_CLIENT_ID': 'x', 'NAVER_CLIENT_SECRET': 'y'})
+    assert url == NAVER_HUB_NEWS_URL and h['X-NCP-APIGW-API-KEY-ID'] == 'i'
+    url2, h2 = naver_news_endpoint({'NAVER_CLIENT_ID': 'x', 'NAVER_CLIENT_SECRET': 'y'})
+    assert url2 == NAVER_NEWS_URL and h2['X-Naver-Client-Id'] == 'x'
+    assert naver_news_endpoint({}) is None
+    assert naver_news_endpoint({'NAVER_HUB_KEY_ID': 'i'}) is None  # 짝 없으면 무효
+
+
 def test_parse_naver_news_strips_and_dates():
     from dashboard_data import parse_naver_news
     data = {'items': [

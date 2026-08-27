@@ -318,9 +318,25 @@ def parse_dart_list(data: dict, limit: int = 5) -> list:
     return rows
 
 
-# ---- 네이버 뉴스 검색 API (공식 오픈API — 크롤링 아님, 일 25,000건) ----
+# ---- 네이버 뉴스 검색 API (공식 — 크롤링 아님) ----
+# 2026 개편: 신규 발급은 네이버클라우드 "NAVER API HUB" (기존 개발자센터 키는 2027-06-30까지)
+# HUB: naverapihub.apigw.ntruss.com/search/v1/news + X-NCP-APIGW-API-KEY(-ID)
+# 구형: openapi.naver.com/v1/search/news.json + X-Naver-Client-Id/Secret
 
 NAVER_NEWS_URL = 'https://openapi.naver.com/v1/search/news.json'
+NAVER_HUB_NEWS_URL = 'https://naverapihub.apigw.ntruss.com/search/v1/news'
+
+
+def naver_news_endpoint(env: dict):
+    """(url, headers) — HUB 키 우선, 구형 키 폴백, 없으면 None"""
+    hub_id, hub_key = env.get('NAVER_HUB_KEY_ID'), env.get('NAVER_HUB_KEY')
+    if hub_id and hub_key:
+        return NAVER_HUB_NEWS_URL, {'X-NCP-APIGW-API-KEY-ID': hub_id,
+                                    'X-NCP-APIGW-API-KEY': hub_key}
+    cid, csec = env.get('NAVER_CLIENT_ID'), env.get('NAVER_CLIENT_SECRET')
+    if cid and csec:
+        return NAVER_NEWS_URL, {'X-Naver-Client-Id': cid, 'X-Naver-Client-Secret': csec}
+    return None
 _TAG_RE = None
 
 
@@ -430,18 +446,17 @@ class MarketCache:
     def _refresh_news(self, codes):
         """네이버 뉴스 검색 (종목명 쿼리, 최신순 5건). 키 없으면 빈 dict."""
         import requests
-        cid = self.env.get('NAVER_CLIENT_ID')
-        csec = self.env.get('NAVER_CLIENT_SECRET')
-        if not cid or not csec:
+        ep = naver_news_endpoint(self.env)
+        if ep is None:
             return {}
-        headers = {'X-Naver-Client-Id': cid, 'X-Naver-Client-Secret': csec}
+        NAVER_URL, headers = ep
         news = {}
         for code in codes:
             if code == CORE_CODE:
                 continue
             q = self.names.get(code) or code
             try:
-                r = requests.get(NAVER_NEWS_URL, headers=headers,
+                r = requests.get(NAVER_URL, headers=headers,
                                  params={'query': q, 'display': 5, 'sort': 'date'},
                                  timeout=10)
                 r.raise_for_status()

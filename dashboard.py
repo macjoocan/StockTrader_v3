@@ -501,9 +501,9 @@ def render_stock(code: str, cache=None) -> str:
             f"<tr><td class='muted'>{html.escape(r['date'])}</td>"
             f"<td><a class='stk' href='{html.escape(r['url'])}' target='_blank' rel='noopener'>"
             f"{html.escape(r['title'])}</a></td></tr>" for r in nrows) + '</table>'
-    elif not os.environ.get('NAVER_CLIENT_ID'):
-        news_html = ('<div class="empty">NAVER_CLIENT_ID/SECRET 미설정 — '
-                     '.env에 추가하면 뉴스가 표시됩니다 (developers.naver.com)</div>')
+    elif not (os.environ.get('NAVER_HUB_KEY_ID') or os.environ.get('NAVER_CLIENT_ID')):
+        news_html = ('<div class="empty">네이버 뉴스 키 미설정 — NAVER API HUB(네이버클라우드)에서 '
+                     '발급 후 .env에 NAVER_HUB_KEY_ID/NAVER_HUB_KEY 추가</div>')
     else:
         news_html = '<div class="empty">뉴스 수집 중</div>'
 
