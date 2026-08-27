@@ -87,9 +87,13 @@ def test_render_stock_detail(tmp_path, monkeypatch):
     cache.snapshot['dart'] = {'_date': '2026-08-28', '068270': [
         {'date': '20260826', 'title': '주요사항보고서', 'submitter': '셀트리온',
          'url': 'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260826000123'}]}
+    cache.snapshot['news'] = {'068270': [
+        {'date': '08-27 09:30', 'title': '셀트리온 신제품 허가',
+         'url': 'https://news.example.com/1'}]}
     page = dashboard.render_stock('068270', cache=cache)
     for expected in ('셀트리온', '58.3', 'PBR', 'ROE%', '35.2', '52주 밴드',
-                     '최근 60일', '참고용', '최근 공시', '주요사항보고서', 'rcpNo='):
+                     '최근 60일', '참고용', '최근 공시', '주요사항보고서', 'rcpNo=',
+                     '최근 뉴스', '신제품 허가'):
         assert expected in page, expected
 
 

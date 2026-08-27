@@ -245,12 +245,15 @@ def render_page(cache=None) -> str:
             tech.append(f"RSI2 {c['rsi2']:.0f}")
         if c['w52_band'] is not None:
             tech.append(f"52주 {c['w52_band']*100:.0f}%")
+        n0 = ((snap.get('news') or {}).get(c['code']) or [None])[0]
+        news_html = (f'<div class="dnews small">📰 {html.escape(n0["title"][:40])}</div>'
+                     if n0 else '')
         return f'''<a class="dcard" href="/stock/{c['code']}">
 <div class="dhead"><b>{html.escape(nm(c['code']))}</b> {badges}</div>
 <div class="dprice">{won(c['cur'])} {chg_html} <span class="muted small">#{c['rank'] or '—'}</span></div>
 {bar('가치', c['value'])}{bar('퀄리티', c['quality'])}{bar('외인', c['frgn_rate'], '%')}
 <div class="dtech muted small">{' · '.join(tech) or '—'}</div>
-<div class="dwhy small">{html.escape(' / '.join(c['reasons']))}</div></a>'''
+{news_html}<div class="dwhy small">{html.escape(' / '.join(c['reasons']))}</div></a>'''
 
     dcards_html = ''.join(dcard(c) for c in dcards) or \
         '<div class="empty">시장 데이터 수집 중</div>'
@@ -404,6 +407,8 @@ STYLE_EXTRA = '''
 .btrack { flex: 1; height: 6px; background: #1d2739; border-radius: 3px; display: block; overflow: hidden; }
 .bfill { display: block; height: 100%; background: var(--info); border-radius: 3px; }
 .dtech { margin-top: 6px; } .dwhy { color: var(--muted); margin-top: 3px; }
+.dnews { color: var(--ink2); margin-top: 4px; white-space: nowrap; overflow: hidden;
+         text-overflow: ellipsis; }
 '''
 
 CHART_JS = r'''
@@ -489,6 +494,19 @@ def render_stock(code: str, cache=None) -> str:
         fin_html = ('<div class="empty">재무비율 데이터 없음 '
                     '(수집 전이거나 모의서버 미지원 — 실전 전환 시 확인)</div>')
 
+    # 뉴스 (네이버 검색 API)
+    nrows = (snap.get('news') or {}).get(code)
+    if nrows:
+        news_html = '<table><tr><th>시각</th><th>기사</th></tr>' + ''.join(
+            f"<tr><td class='muted'>{html.escape(r['date'])}</td>"
+            f"<td><a class='stk' href='{html.escape(r['url'])}' target='_blank' rel='noopener'>"
+            f"{html.escape(r['title'])}</a></td></tr>" for r in nrows) + '</table>'
+    elif not os.environ.get('NAVER_CLIENT_ID'):
+        news_html = ('<div class="empty">NAVER_CLIENT_ID/SECRET 미설정 — '
+                     '.env에 추가하면 뉴스가 표시됩니다 (developers.naver.com)</div>')
+    else:
+        news_html = '<div class="empty">뉴스 수집 중</div>'
+
     # DART 최근 공시
     drows = (snap.get('dart') or {}).get(code)
     if drows:
@@ -517,6 +535,7 @@ def render_stock(code: str, cache=None) -> str:
 <div class="cards">{cards}</div>
 <div class="panel"><h2>최근 60일 종가</h2>{chart}</div>
 <div class="panel"><h2>재무비율 (연간, KIS 제공)</h2>{fin_html}</div>
+<div class="panel"><h2>최근 뉴스 (네이버 검색)</h2>{news_html}</div>
 <div class="panel"><h2>최근 공시 (30일, DART)</h2>{dart_html}</div>
 <div id="tip" class="tip" hidden></div>
 <script>{CHART_JS}</script>
@@ -541,5 +560,5 @@ if __name__ == '__main__':
     cfg = load_config(dict(os.environ))
     universe = json.loads((Path(__file__).parent / 'data' / 'universe_2026.json')
                           .read_text(encoding='utf-8'))['codes']
-    CACHE = MarketCache(cfg, universe)
+    CACHE = MarketCache(cfg, universe, names=NAMES)
     app.run(host='0.0.0.0', port=5030)

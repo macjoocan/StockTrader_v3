@@ -195,6 +195,23 @@ def test_parse_dart_list_builds_urls():
     assert parse_dart_list({'status': '013'}) == []
 
 
+def test_parse_naver_news_strips_and_dates():
+    from dashboard_data import parse_naver_news
+    data = {'items': [
+        {'title': '<b>셀트리온</b>, 키트루다 시밀러 &quot;허가 신청&quot;',
+         'originallink': 'https://news.example.com/1',
+         'link': 'https://n.naver.com/1',
+         'pubDate': 'Wed, 27 Aug 2026 09:30:00 +0900'},
+        {'title': '후속 기사', 'link': 'https://n.naver.com/2', 'pubDate': 'bad-date'},
+    ]}
+    rows = parse_naver_news(data)
+    assert rows[0]['title'] == '셀트리온, 키트루다 시밀러 "허가 신청"'
+    assert rows[0]['url'] == 'https://news.example.com/1'  # 원문 우선
+    assert rows[0]['date'] == '08-27 09:30'
+    assert rows[1]['url'] == 'https://n.naver.com/2' and rows[1]['date'] == ''
+    assert parse_naver_news({}) == []
+
+
 def test_gate_status():
     g = gate_status(date(2026, 8, 22))
     assert g['d_left'] == 23 and g['over'] is False

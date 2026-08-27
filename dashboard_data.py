@@ -318,6 +318,37 @@ def parse_dart_list(data: dict, limit: int = 5) -> list:
     return rows
 
 
+# ---- 네이버 뉴스 검색 API (공식 오픈API — 크롤링 아님, 일 25,000건) ----
+
+NAVER_NEWS_URL = 'https://openapi.naver.com/v1/search/news.json'
+_TAG_RE = None
+
+
+def _strip_tags(s: str) -> str:
+    global _TAG_RE
+    import html as _html
+    import re
+    if _TAG_RE is None:
+        _TAG_RE = re.compile(r'<[^>]+>')
+    return _html.unescape(_TAG_RE.sub('', s or '')).strip()
+
+
+def parse_naver_news(data: dict, limit: int = 5) -> list:
+    """news.json -> [{'title','url','date'}] (title 태그/엔티티 제거, date=MM-DD HH:MM)"""
+    from email.utils import parsedate_to_datetime
+    rows = []
+    for it in (data.get('items') or [])[:limit]:
+        try:
+            dt = parsedate_to_datetime(it.get('pubDate', ''))
+            date = f'{dt:%m-%d %H:%M}'
+        except (TypeError, ValueError):
+            date = ''
+        rows.append({'title': _strip_tags(it.get('title')),
+                     'url': it.get('originallink') or it.get('link') or '',
+                     'date': date})
+    return rows
+
+
 # ---- 시장 캐시 (I/O — 유닛테스트 제외, 안전규칙만 순수함수로 분리) ----
 
 def token_file_fresh(data_dir: Path, mode: str, now_ts: float, min_left: int = 900) -> bool:
@@ -341,8 +372,9 @@ class MarketCache:
     """백그라운드 시장 데이터 수집 (10분 주기). snapshot dict:
     {ts, total, cash, holdings, closes: {code: Series}, error}"""
 
-    def __init__(self, env: dict, universe: list, interval: int = 600):
+    def __init__(self, env: dict, universe: list, interval: int = 600, names: dict | None = None):
         self.env, self.universe, self.interval = env, list(universe), interval
+        self.names = names or {}
         self.data_dir = Path(env.get('DATA_DIR') or '.')
         self.mode = (env.get('KIS_MODE') or 'paper').lower()
         self.snapshot = None
@@ -389,10 +421,35 @@ class MarketCache:
                 pass  # 종목 단위 실패는 스킵 (다음 주기 재시도)
         fin = self._refresh_fin(b, codes, now)
         dart = self._refresh_dart(codes, now)
+        news = self._refresh_news(codes)
         self.snapshot = {'ts': now.isoformat(), 'total': snap.total, 'cash': snap.cash,
                          'holdings': snap.holdings, 'closes': closes, 'quotes': quotes,
-                         'fin': fin, 'dart': dart}
+                         'fin': fin, 'dart': dart, 'news': news}
         self.status = f'{now:%H:%M} 갱신 ({len(closes)}종목)'
+
+    def _refresh_news(self, codes):
+        """네이버 뉴스 검색 (종목명 쿼리, 최신순 5건). 키 없으면 빈 dict."""
+        import requests
+        cid = self.env.get('NAVER_CLIENT_ID')
+        csec = self.env.get('NAVER_CLIENT_SECRET')
+        if not cid or not csec:
+            return {}
+        headers = {'X-Naver-Client-Id': cid, 'X-Naver-Client-Secret': csec}
+        news = {}
+        for code in codes:
+            if code == CORE_CODE:
+                continue
+            q = self.names.get(code) or code
+            try:
+                r = requests.get(NAVER_NEWS_URL, headers=headers,
+                                 params={'query': q, 'display': 5, 'sort': 'date'},
+                                 timeout=10)
+                r.raise_for_status()
+                news[code] = parse_naver_news(r.json())
+            except Exception:
+                pass  # 종목 단위 실패 스킵
+            time.sleep(0.12)
+        return news
 
     def _corp_map(self, key, codes) -> dict:
         """종목코드->DART 고유번호. 파일캐시(사실상 영구), 부족하면 zip 재다운로드."""
