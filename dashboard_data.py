@@ -289,6 +289,35 @@ def gate_status(today: date) -> dict:
     return {'end': GATE_END.isoformat(), 'd_left': d_left, 'over': d_left < 0}
 
 
+# ---- DART 공시 (금감원 오픈API, 키 필요 — 일 20,000건 제한이라 여유) ----
+
+DART_LIST_URL = 'https://opendart.fss.or.kr/api/list.json'
+DART_CORP_URL = 'https://opendart.fss.or.kr/api/corpCode.xml'
+
+
+def parse_dart_corp_xml(xml_bytes: bytes, wanted: set) -> dict:
+    """corpCode.xml -> {종목코드: dart고유번호} (wanted만)"""
+    import xml.etree.ElementTree as ET
+    out = {}
+    for el in ET.fromstring(xml_bytes).iter('list'):
+        stock = (el.findtext('stock_code') or '').strip()
+        if stock in wanted:
+            out[stock] = (el.findtext('corp_code') or '').strip()
+    return out
+
+
+def parse_dart_list(data: dict, limit: int = 5) -> list:
+    """list.json -> [{'date','title','submitter','url'}] (최신순 그대로)"""
+    rows = []
+    for it in (data.get('list') or [])[:limit]:
+        rcp = it.get('rcept_no', '')
+        rows.append({'date': it.get('rcept_dt', ''),
+                     'title': it.get('report_nm', ''),
+                     'submitter': it.get('flr_nm', ''),
+                     'url': f'https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcp}'})
+    return rows
+
+
 # ---- 시장 캐시 (I/O — 유닛테스트 제외, 안전규칙만 순수함수로 분리) ----
 
 def token_file_fresh(data_dir: Path, mode: str, now_ts: float, min_left: int = 900) -> bool:
@@ -359,10 +388,64 @@ class MarketCache:
             except Exception:
                 pass  # 종목 단위 실패는 스킵 (다음 주기 재시도)
         fin = self._refresh_fin(b, codes, now)
+        dart = self._refresh_dart(codes, now)
         self.snapshot = {'ts': now.isoformat(), 'total': snap.total, 'cash': snap.cash,
                          'holdings': snap.holdings, 'closes': closes, 'quotes': quotes,
-                         'fin': fin}
+                         'fin': fin, 'dart': dart}
         self.status = f'{now:%H:%M} 갱신 ({len(closes)}종목)'
+
+    def _corp_map(self, key, codes) -> dict:
+        """종목코드->DART 고유번호. 파일캐시(사실상 영구), 부족하면 zip 재다운로드."""
+        import io
+        import zipfile
+        import requests
+        cache = self.data_dir / 'dart_corp_map.json'
+        try:
+            m = json.loads(cache.read_text(encoding='utf-8'))
+            if all(c in m for c in codes if c != CORE_CODE):
+                return m
+        except (OSError, ValueError):
+            m = {}
+        r = requests.get(DART_CORP_URL, params={'crtfc_key': key}, timeout=30)
+        r.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            xml_bytes = z.read(z.namelist()[0])
+        m = parse_dart_corp_xml(xml_bytes, set(codes))
+        try:
+            cache.write_text(json.dumps(m), encoding='utf-8')
+        except OSError:
+            pass
+        return m
+
+    def _refresh_dart(self, codes, now):
+        """최근 30일 공시 — 하루 1회. 키 없으면 빈 dict (페이지에서 안내)."""
+        import requests
+        key = self.env.get('DART_API_KEY')
+        prev = (self.snapshot or {}).get('dart') or {}
+        if not key:
+            return {}
+        if prev.get('_date') == f'{now:%F}':
+            return prev
+        dart = {'_date': f'{now:%F}'}
+        try:
+            corp = self._corp_map(key, [c for c in codes if c != CORE_CODE])
+        except Exception:
+            return prev  # 맵 실패 시 이전값 유지, 다음 주기 재시도
+        bgn = f'{(now - timedelta(days=30)):%Y%m%d}'
+        for code, corp_code in corp.items():
+            try:
+                r = requests.get(DART_LIST_URL, params={
+                    'crtfc_key': key, 'corp_code': corp_code,
+                    'bgn_de': bgn, 'end_de': f'{now:%Y%m%d}',
+                    'page_count': '10'}, timeout=15)
+                r.raise_for_status()
+                data = r.json()
+                if data.get('status') in ('000', '013'):  # 013 = 데이터 없음(정상)
+                    dart[code] = parse_dart_list(data)
+            except Exception:
+                pass  # 종목 단위 실패 스킵
+            time.sleep(0.1)
+        return dart
 
     def _refresh_fin(self, b, codes, now):
         """재무비율 — 하루 1회만 (거의 안 변함). 미지원(VTS 가능성)이면 빈 dict 유지."""

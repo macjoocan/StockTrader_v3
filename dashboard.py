@@ -489,6 +489,19 @@ def render_stock(code: str, cache=None) -> str:
         fin_html = ('<div class="empty">재무비율 데이터 없음 '
                     '(수집 전이거나 모의서버 미지원 — 실전 전환 시 확인)</div>')
 
+    # DART 최근 공시
+    drows = (snap.get('dart') or {}).get(code)
+    if drows:
+        dart_html = '<table><tr><th>제출일</th><th>보고서</th><th>제출인</th></tr>' + ''.join(
+            f"<tr><td class='muted'>{html.escape(r['date'])}</td>"
+            f"<td><a class='stk' href='{html.escape(r['url'])}' target='_blank' rel='noopener'>"
+            f"{html.escape(r['title'])}</a></td>"
+            f"<td class='muted'>{html.escape(r['submitter'])}</td></tr>" for r in drows) + '</table>'
+    elif not os.environ.get('DART_API_KEY'):
+        dart_html = '<div class="empty">DART_API_KEY 미설정 — .env에 추가하면 공시가 표시됩니다</div>'
+    else:
+        dart_html = '<div class="empty">최근 30일 공시 없음 (또는 수집 중)</div>'
+
     chart = svg_chart({name: [(f'{ts:%Y-%m-%d}', float(v)) for ts, v in s.iloc[-60:].items()]},
                       {name: C_ACCT}) if s is not None and len(s) else \
         '<div class="empty">차트 데이터 수집 중</div>'
@@ -504,6 +517,7 @@ def render_stock(code: str, cache=None) -> str:
 <div class="cards">{cards}</div>
 <div class="panel"><h2>최근 60일 종가</h2>{chart}</div>
 <div class="panel"><h2>재무비율 (연간, KIS 제공)</h2>{fin_html}</div>
+<div class="panel"><h2>최근 공시 (30일, DART)</h2>{dart_html}</div>
 <div id="tip" class="tip" hidden></div>
 <script>{CHART_JS}</script>
 </body></html>'''

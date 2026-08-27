@@ -169,6 +169,32 @@ def test_diagnose_cards_sorted_by_total():
     assert cards[0]['code'] == 'GOOD'  # 종합 최고가 앞
 
 
+def test_parse_dart_corp_xml():
+    from dashboard_data import parse_dart_corp_xml
+    xml = b'''<?xml version="1.0" encoding="UTF-8"?><result>
+    <list><corp_code>00126380</corp_code><corp_name>\xec\x82\xbc\xec\x84\xb1\xec\xa0\x84\xec\x9e\x90</corp_name><stock_code>005930</stock_code></list>
+    <list><corp_code>00999999</corp_code><corp_name>X</corp_name><stock_code></stock_code></list>
+    <list><corp_code>00421045</corp_code><corp_name>\xec\x85\x80\xed\x8a\xb8\xeb\xa6\xac\xec\x98\xa8</corp_name><stock_code>068270</stock_code></list>
+    </result>'''
+    m = parse_dart_corp_xml(xml, {'005930', '068270'})
+    assert m == {'005930': '00126380', '068270': '00421045'}
+
+
+def test_parse_dart_list_builds_urls():
+    from dashboard_data import parse_dart_list
+    data = {'status': '000', 'list': [
+        {'rcept_no': '20260826000123', 'report_nm': '주요사항보고서',
+         'rcept_dt': '20260826', 'flr_nm': '셀트리온'},
+        {'rcept_no': '20260820000456', 'report_nm': '반기보고서',
+         'rcept_dt': '20260820', 'flr_nm': '셀트리온'},
+    ]}
+    rows = parse_dart_list(data)
+    assert len(rows) == 2
+    assert rows[0]['url'].endswith('rcpNo=20260826000123')
+    assert rows[0]['title'] == '주요사항보고서'
+    assert parse_dart_list({'status': '013'}) == []
+
+
 def test_gate_status():
     g = gate_status(date(2026, 8, 22))
     assert g['d_left'] == 23 and g['over'] is False

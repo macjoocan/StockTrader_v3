@@ -2,7 +2,7 @@
 # KIS_MODE: paper(기본)|live — 모의/실전 도메인·TR·키 전환 (broker/kis.py)
 REQUIRED = ['KIS_ACCOUNT', 'KIS_APPKEY', 'KIS_SECRET',
             'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID', 'DATA_DIR']
-OPTIONAL = ['KIS_ID', 'KIS_MODE',
+OPTIONAL = ['KIS_ID', 'KIS_MODE', 'DART_API_KEY',
             'KIS_VIRTUAL_ID', 'KIS_VIRTUAL_APPKEY', 'KIS_VIRTUAL_SECRET']
 
 
