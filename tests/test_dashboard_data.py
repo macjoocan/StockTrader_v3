@@ -98,6 +98,40 @@ def test_fin_rows_labels_and_missing():
     assert fin_rows(None) == []
 
 
+def test_factor_ranking_orders_and_defends():
+    from dashboard_data import factor_ranking
+    quotes = {
+        'GOOD': {'per': '5.0', 'pbr': '0.8'},    # 싸다
+        'MID':  {'per': '15.0', 'pbr': '1.5'},
+        'EXP':  {'per': '60.0', 'pbr': '6.0'},   # 비싸다
+        'LOSS': {'per': '-8.0', 'pbr': '2.0'},   # 적자 -> PER 결측 처리
+    }
+    fin = {
+        'GOOD': [{'roe_val': '15.0', 'lblt_rate': '40'}],   # 퀄리티 최상
+        'MID':  [{'roe_val': '8.0', 'lblt_rate': '90'}],
+        'EXP':  [{'roe_val': '3.0', 'lblt_rate': '150'}],
+        'LOSS': [{'roe_val': '-5.0', 'lblt_rate': '200'}],  # 음수 ROE 허용(최하)
+    }
+    rows = factor_ranking(quotes, fin)
+    assert rows[0]['code'] == 'GOOD' and rows[0]['rank'] == 1
+    assert rows[0]['total'] == 100  # 전 지표 1위
+    loss = next(r for r in rows if r['code'] == 'LOSS')
+    assert loss['per'] is None          # 적자 PER 제외
+    assert loss['roe'] == -5.0          # 음수 ROE는 유지(랭크 최하)
+    assert rows[-1]['code'] in ('EXP', 'LOSS')
+
+
+def test_factor_ranking_skips_sparse_metric():
+    from dashboard_data import factor_ranking
+    quotes = {'A': {'per': '5'}, 'B': {'per': '10'}, 'C': {'per': '20'}}
+    rows = factor_ranking(quotes, {})  # pbr/roe/debt 전부 결측 -> per만으로 랭킹
+    assert rows[0]['code'] == 'A' and rows[0]['value'] == 100
+    assert rows[0]['quality'] is None
+    # 유효표본 2개뿐인 지표는 통째로 제외
+    rows2 = factor_ranking({'A': {'per': '5'}, 'B': {'per': '10'}}, {})
+    assert all(r['total'] is None for r in rows2)
+
+
 def test_gate_status():
     g = gate_status(date(2026, 8, 22))
     assert g['d_left'] == 23 and g['over'] is False

@@ -184,6 +184,54 @@ def fin_rows(fin_list: list, limit: int = 4) -> list:
     return rows
 
 
+# ---- Tier 2: 팩터 랭킹 (정보성 — 매매 미연결, 백테 미검증) ----
+
+FACTOR_METRICS = [  # (키, 낮을수록좋음, 축)
+    ('per', True, 'value'), ('pbr', True, 'value'),
+    ('roe', False, 'quality'), ('debt', True, 'quality'),
+]
+
+
+def factor_ranking(quotes: dict, fin: dict) -> list:
+    """유니버스 가치(PER/PBR)·퀄리티(ROE/부채비율) 순위 백분위 점수 (0~100, 높을수록 우위).
+    적자 PER(<=0)·비정상 PBR(<=0)은 결측 처리. 지표별 유효표본 3개 미만이면 그 지표 제외.
+    ROE는 음수 허용(낮은 점수로 랭크)."""
+    rows = []
+    for code, q in (quotes or {}).items():
+        v = valuation_row(q)
+        latest = ((fin or {}).get(code) or [{}])[0]
+        per = v['per'] if (v['per'] or 0) > 0 else None
+        pbr = v['pbr'] if (v['pbr'] or 0) > 0 else None
+        debt = _f(latest.get('lblt_rate'))
+        debt = debt if (debt or 0) > 0 else None
+        rows.append({'code': code, 'per': per, 'pbr': pbr,
+                     'roe': _f(latest.get('roe_val')), 'debt': debt, '_s': {}})
+    for key, lower_better, _axis in FACTOR_METRICS:
+        present = sorted([r for r in rows if r[key] is not None], key=lambda r: r[key])
+        n = len(present)
+        if n < 3:
+            continue
+        for i, r in enumerate(present):
+            s = 1 - i / (n - 1) if lower_better else i / (n - 1)
+            r['_s'][key] = s
+    for r in rows:
+        axis_scores = {'value': [], 'quality': []}
+        for key, _lb, axis in FACTOR_METRICS:
+            if key in r['_s']:
+                axis_scores[axis].append(r['_s'][key])
+        r['value'] = round(100 * sum(axis_scores['value']) / len(axis_scores['value'])) \
+            if axis_scores['value'] else None
+        r['quality'] = round(100 * sum(axis_scores['quality']) / len(axis_scores['quality'])) \
+            if axis_scores['quality'] else None
+        both = [x for x in (r['value'], r['quality']) if x is not None]
+        r['total'] = round(sum(both) / len(both)) if both else None
+        del r['_s']
+    rows.sort(key=lambda r: (r['total'] is None, -(r['total'] or 0)))
+    for i, r in enumerate(rows):
+        r['rank'] = i + 1 if r['total'] is not None else None
+    return rows
+
+
 def gate_status(today: date) -> dict:
     d_left = (GATE_END - today).days
     return {'end': GATE_END.isoformat(), 'd_left': d_left, 'over': d_left < 0}

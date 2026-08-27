@@ -18,9 +18,9 @@ from flask import Flask
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, str(Path(__file__).parent))
 
-from dashboard_data import (CORE_CODE, enrich_positions, fin_rows,  # noqa: E402
-                            gate_status, indexed_pair, ops_report, radar_rows,
-                            realized_trades, valuation_row)
+from dashboard_data import (CORE_CODE, enrich_positions, factor_ranking,  # noqa: E402
+                            fin_rows, gate_status, indexed_pair, ops_report,
+                            radar_rows, realized_trades, valuation_row)
 
 KST = timezone(timedelta(hours=9))
 DATA_DIR = Path(os.environ.get('DATA_DIR') or './data-volume')
@@ -215,6 +215,27 @@ def render_page(cache=None) -> str:
     radar_html = ''.join(radar_row(r) for r in radar) or \
         '<tr><td colspan="5" class="empty">시장 데이터 수집 중 (기동 후 ~1분)</td></tr>'
 
+    # -- 팩터 랭킹 (Tier 2: 정보성) --
+    uni_quotes = {c: q for c, q in (snap.get('quotes') or {}).items() if c != CORE_CODE}
+    franks = factor_ranking(uni_quotes, snap.get('fin') or {})
+
+    def fnum(v, fmt='{:.1f}'):
+        return fmt.format(v) if v is not None else '—'
+
+    def frow(r):
+        pin = ' 📌' if r['code'] in state['positions'] else ''
+        top = ' style="color:var(--good);font-weight:700"' if (r['rank'] or 99) <= 3 else ''
+        return (f"<tr><td class='num'{top}>{r['rank'] or '—'}</td>"
+                f"<td>{stk_link(r['code'])}{pin}</td>"
+                f"<td class='num'>{fnum(r['per'])}</td><td class='num'>{fnum(r['pbr'], '{:.2f}')}</td>"
+                f"<td class='num'>{fnum(r['roe'])}</td><td class='num'>{fnum(r['debt'], '{:.0f}')}</td>"
+                f"<td class='num'>{r['value'] if r['value'] is not None else '—'}</td>"
+                f"<td class='num'>{r['quality'] if r['quality'] is not None else '—'}</td>"
+                f"<td class='num'><b>{r['total'] if r['total'] is not None else '—'}</b></td></tr>")
+
+    factor_html = ''.join(frow(r) for r in franks) or \
+        '<tr><td colspan="9" class="empty">시장 데이터 수집 중</td></tr>'
+
     # -- 실현손익 --
     trades = realized_trades(events)
     if trades:
@@ -275,6 +296,11 @@ def render_page(cache=None) -> str:
 <table><tr><th>종목 (📌보유)</th><th class="num">현재가</th><th class="num">등락</th>
 <th class="num">RSI2</th><th>SMA200</th></tr>{radar_html}</table></div>
 </div>
+<div class="panel"><h2>팩터 랭킹 — 가치(PER·PBR)·퀄리티(ROE·부채비율) 순위점수
+<span class="badge warn">참고용 · 백테 미검증 · 매매 미연결</span></h2>
+<table><tr><th class="num">순위</th><th>종목 (📌보유)</th><th class="num">PER</th><th class="num">PBR</th>
+<th class="num">ROE%</th><th class="num">부채비율%</th><th class="num">가치</th><th class="num">퀄리티</th>
+<th class="num">종합</th></tr>{factor_html}</table></div>
 <div class="panel"><h2>실현손익 (새틀라이트 청산 기록)</h2>
 <table><tr><th>종목</th><th class="num">수량</th><th>기간</th><th class="num">매수→매도가</th>
 <th class="num">손익</th></tr>{trades_html}</table></div>
@@ -369,6 +395,16 @@ def render_stock(code: str, cache=None) -> str:
         sig = ' · <span class="badge crit">신호권</span>' if (above and r2 < 10) else ''
         tech = f"RSI2 {r2:.1f} · SMA200 {'위' if above else '아래'}{sig}"
 
+    # 팩터 랭킹 내 위치 (Tier 2, 참고용)
+    uni_q = {c: qq for c, qq in (snap.get('quotes') or {}).items() if c != CORE_CODE}
+    franks = factor_ranking(uni_q, snap.get('fin') or {})
+    mine = next((r for r in franks if r['code'] == code), None)
+    n_ranked = sum(1 for r in franks if r['rank'])
+    rank_txt = ''
+    if mine and mine['rank']:
+        rank_txt = (f" · 팩터랭킹 <b>{mine['rank']}/{n_ranked}위</b>"
+                    f" (가치 {mine['value']} · 퀄리티 {mine['quality']})")
+
     def card(k, v, c=''):
         return f'<div class="card"><div class="k">{k}</div><div class="v {c}">{v}</div></div>'
 
@@ -410,7 +446,7 @@ def render_stock(code: str, cache=None) -> str:
 <style>{BASE_STYLE}{STYLE_EXTRA}</style></head><body>
 <a class="back" href="/">← 대시보드</a>
 <h1 style="margin-top:8px">{html.escape(name)} <span class="muted">{html.escape(code)}</span> {held_html}</h1>
-<div class="sub">기술 상태: {tech} · 데이터는 참고용 (투자 판단 아님)</div>
+<div class="sub">기술 상태: {tech}{rank_txt} · 데이터는 참고용 (투자 판단 아님)</div>
 <div class="cards">{cards}</div>
 <div class="panel"><h2>최근 60일 종가</h2>{chart}</div>
 <div class="panel"><h2>재무비율 (연간, KIS 제공)</h2>{fin_html}</div>
