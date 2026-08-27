@@ -73,12 +73,16 @@ def test_render_stock_detail(tmp_path, monkeypatch):
     monkeypatch.setattr(dashboard, 'DATA_DIR', tmp_path)
     idx = pd.bdate_range(end='2026-08-21', periods=250)
     closes = pd.Series([190000.0 + i * 10 for i in range(250)], index=idx)
+    ohlcv = pd.DataFrame({'open': closes * 0.99, 'high': closes * 1.01,
+                          'low': closes * 0.98, 'close': closes,
+                          'volume': 1000.0}, index=idx)
     cache = SimpleNamespace(
         snapshot={'quotes': {'068270': {
             'stck_prpr': '192300', 'prdy_ctrt': '-1.15', 'per': '58.3', 'pbr': '5.1',
             'eps': '3298', 'bps': '37699', 'hts_avls': '421000',
             'w52_hgpr': '215000', 'w52_lwpr': '140000', 'hts_frgn_ehrt': '21.5'}},
             'closes': {'068270': closes},
+            'ohlcv': {'068270': ohlcv},
             'fin': {'_date': '2026-08-22', '068270': [
                 {'stac_yymm': '202512', 'roe_val': '8.1', 'lblt_rate': '35.2',
                  'rsrv_rate': '5000', 'grs': '12.0', 'bsop_prfi_inrt': '20.1',
@@ -92,7 +96,8 @@ def test_render_stock_detail(tmp_path, monkeypatch):
          'url': 'https://news.example.com/1'}]}
     page = dashboard.render_stock('068270', cache=cache)
     for expected in ('셀트리온', '58.3', 'PBR', 'ROE%', '35.2', '52주 밴드',
-                     '최근 60일', '참고용', '최근 공시', '주요사항보고서', 'rcpNo=',
+                     '일봉 차트', 'cchart', 'data-payload', '드래그',
+                     '참고용', '최근 공시', '주요사항보고서', 'rcpNo=',
                      '최근 뉴스', '신제품 허가'):
         assert expected in page, expected
 

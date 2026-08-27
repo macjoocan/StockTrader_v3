@@ -232,6 +232,43 @@ def factor_ranking(quotes: dict, fin: dict) -> list:
     return rows
 
 
+# ---- 캔들차트 페이로드 (상세 페이지 — 서버가 지표 계산, JS가 렌더) ----
+
+def _nan_list(s, digits=1):
+    return [None if pd.isna(x) else round(float(x), digits) for x in s]
+
+
+def chart_payload(ohlcv: pd.DataFrame, news: list = None, dart: list = None) -> dict:
+    """OHLCV + 지표(SMA5/20/200, BB20, RSI2) + 이벤트(뉴스/공시) -> JSON 직렬화용 dict"""
+    if ohlcv is None or ohlcv.empty:
+        return {}
+    c = ohlcv['close']
+    sma20 = c.rolling(20).mean()
+    std20 = c.rolling(20).std()
+    dates = [f'{d:%Y-%m-%d}' for d in ohlcv.index]
+    dset = set(dates)
+    events = []
+    for r in (news or []):
+        if r.get('iso') in dset:
+            events.append({'d': r['iso'], 'k': 'news', 't': r['title'], 'u': r.get('url', '')})
+    for r in (dart or []):
+        d = str(r.get('date', ''))
+        iso = f'{d[:4]}-{d[4:6]}-{d[6:8]}' if len(d) == 8 else d
+        if iso in dset:
+            events.append({'d': iso, 'k': 'dart', 't': r.get('title', ''), 'u': r.get('url', '')})
+    return {
+        'd': dates,
+        'o': _nan_list(ohlcv['open']), 'h': _nan_list(ohlcv['high']),
+        'l': _nan_list(ohlcv['low']), 'c': _nan_list(c),
+        'v': _nan_list(ohlcv['volume'], 0),
+        'sma5': _nan_list(sma(c, 5)), 'sma20': _nan_list(sma20),
+        'sma200': _nan_list(sma(c, 200)),
+        'bbu': _nan_list(sma20 + 2 * std20), 'bbd': _nan_list(sma20 - 2 * std20),
+        'rsi': _nan_list(rsi(c, 2)),
+        'ev': events,
+    }
+
+
 # ---- 종목 진단 카드 (규칙 기반 서술 — "추천" 아님, 근거 동시 표시) ----
 
 DEBT_ALERT = 200.0   # 부채비율 이상 -> 재무 주의
@@ -356,12 +393,12 @@ def parse_naver_news(data: dict, limit: int = 5) -> list:
     for it in (data.get('items') or [])[:limit]:
         try:
             dt = parsedate_to_datetime(it.get('pubDate', ''))
-            date = f'{dt:%m-%d %H:%M}'
+            date, iso = f'{dt:%m-%d %H:%M}', f'{dt:%Y-%m-%d}'
         except (TypeError, ValueError):
-            date = ''
+            date, iso = '', ''
         rows.append({'title': _strip_tags(it.get('title')),
                      'url': it.get('originallink') or it.get('link') or '',
-                     'date': date})
+                     'date': date, 'iso': iso})
     return rows
 
 
@@ -425,10 +462,12 @@ class MarketCache:
         b = KisBroker(self.env)
         snap = b.balance()
         codes = list(dict.fromkeys([*self.universe, CORE_CODE, *self._positions_codes()]))
-        closes, quotes = {}, {}
+        closes, quotes, ohlcv = {}, {}, {}
         for c in codes:
             try:
-                closes[c] = b.daily_closes(c, 260)
+                df = b.daily_ohlcv(c, 260)
+                ohlcv[c] = df
+                closes[c] = df['close']  # 기존 소비자(레이더/포지션/벤치마크) 호환
                 d = b._request('GET', '/uapi/domestic-stock/v1/quotations/inquire-price',
                                'FHKST01010100',
                                params={'FID_COND_MRKT_DIV_CODE': 'J', 'FID_INPUT_ISCD': c})
@@ -440,7 +479,7 @@ class MarketCache:
         news = self._refresh_news(codes)
         self.snapshot = {'ts': now.isoformat(), 'total': snap.total, 'cash': snap.cash,
                          'holdings': snap.holdings, 'closes': closes, 'quotes': quotes,
-                         'fin': fin, 'dart': dart, 'news': news}
+                         'ohlcv': ohlcv, 'fin': fin, 'dart': dart, 'news': news}
         self.status = f'{now:%H:%M} 갱신 ({len(closes)}종목)'
 
     def _refresh_news(self, codes):

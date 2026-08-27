@@ -29,6 +29,20 @@ def test_snapshot_total_fallback_when_missing():
     assert s.total == 500000.0 + 140000.0
 
 
+def test_ohlcv_from_chart_full_and_fallback():
+    from broker.kis import ohlcv_from_chart
+    rows = [
+        {'stck_bsop_date': '20260810', 'stck_oprc': '100', 'stck_hgpr': '110',
+         'stck_lwpr': '95', 'stck_clpr': '105', 'acml_vol': '1000'},
+        {'stck_bsop_date': '20260811', 'stck_clpr': '107'},  # o/h/l/v 누락 -> 폴백
+    ]
+    df = ohlcv_from_chart(rows)
+    assert list(df.columns) == ['open', 'high', 'low', 'close', 'volume']
+    assert df.iloc[0].tolist() == [100.0, 110.0, 95.0, 105.0, 1000.0]
+    assert df.iloc[1]['open'] == 107.0 and df.iloc[1]['volume'] == 0.0
+    assert ohlcv_from_chart([]).empty
+
+
 def test_closes_from_chart_sorted_dedup_skips_blank():
     rows = [
         {'stck_bsop_date': '20260811', 'stck_clpr': '71000'},

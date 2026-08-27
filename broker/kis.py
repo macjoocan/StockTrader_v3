@@ -75,16 +75,29 @@ def snapshot_from_balance(output1: list, output2: list) -> Snapshot:
 
 def closes_from_chart(rows: list) -> pd.Series:
     """기간별시세 output2 -> 날짜 오름차순 종가 Series. 빈 행(패딩)/중복 제거."""
-    pairs = {}
+    return ohlcv_from_chart(rows)['close']
+
+
+def ohlcv_from_chart(rows: list) -> pd.DataFrame:
+    """output2 -> OHLCV DataFrame (날짜 오름차순). o/h/l/v 누락 시 종가/0 폴백 (방어)."""
+    recs = {}
     for row in rows or []:
         d, c = row.get('stck_bsop_date'), row.get('stck_clpr')
-        if d and c:
-            pairs[d] = float(c)
-    if not pairs:
-        return pd.Series(dtype=float)
-    s = pd.Series(pairs)
-    s.index = pd.to_datetime(s.index, format='%Y%m%d')
-    return s.sort_index()
+        if not (d and c):
+            continue
+        close = float(c)
+        recs[d] = {
+            'open': float(row.get('stck_oprc') or close),
+            'high': float(row.get('stck_hgpr') or close),
+            'low': float(row.get('stck_lwpr') or close),
+            'close': close,
+            'volume': float(row.get('acml_vol') or 0),
+        }
+    if not recs:
+        return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+    df = pd.DataFrame.from_dict(recs, orient='index')
+    df.index = pd.to_datetime(df.index, format='%Y%m%d')
+    return df.sort_index()
 
 
 class KisBroker:
@@ -218,6 +231,9 @@ class KisBroker:
         return snapshot_from_balance(out1, out2)
 
     def daily_closes(self, code: str, days: int = 260) -> pd.Series:
+        return self.daily_ohlcv(code, days)['close']
+
+    def daily_ohlcv(self, code: str, days: int = 260) -> pd.DataFrame:
         frames = []
         end = datetime.now(KST).date()
         for _ in range(5):  # 호출당 최대 100봉 -> 반환 최소일자 앵커로 페이지네이션
@@ -229,15 +245,15 @@ class KisBroker:
                 'FID_PERIOD_DIV_CODE': 'D',
                 'FID_ORG_ADJ_PRC': '0',  # 0=수정주가 (스펙 §5-(b))
             })
-            s = closes_from_chart(data.get('output2') or [])
-            if s.empty:
+            df = ohlcv_from_chart(data.get('output2') or [])
+            if df.empty:
                 break
-            frames.append(s)
+            frames.append(df)
             if sum(len(f) for f in frames) >= days:
                 break
-            end = (s.index[0] - timedelta(days=1)).date()
+            end = (df.index[0] - timedelta(days=1)).date()
         if not frames:
-            return pd.Series(dtype=float)
+            return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
         merged = pd.concat(frames).sort_index()
         merged = merged[~merged.index.duplicated(keep='last')]
         return merged.iloc[-days:]

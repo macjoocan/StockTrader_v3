@@ -18,9 +18,10 @@ from flask import Flask
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, str(Path(__file__).parent))
 
-from dashboard_data import (CORE_CODE, diagnose_cards, enrich_positions,  # noqa: E402
-                            factor_ranking, fin_rows, gate_status, indexed_pair,
-                            ops_report, radar_rows, realized_trades, valuation_row)
+from dashboard_data import (CORE_CODE, chart_payload, diagnose_cards,  # noqa: E402
+                            enrich_positions, factor_ranking, fin_rows, gate_status,
+                            indexed_pair, ops_report, radar_rows, realized_trades,
+                            valuation_row)
 
 KST = timezone(timedelta(hours=9))
 DATA_DIR = Path(os.environ.get('DATA_DIR') or './data-volume')
@@ -409,6 +410,126 @@ STYLE_EXTRA = '''
 .dtech { margin-top: 6px; } .dwhy { color: var(--muted); margin-top: 3px; }
 .dnews { color: var(--ink2); margin-top: 4px; white-space: nowrap; overflow: hidden;
          text-overflow: ellipsis; }
+.crange { margin-bottom: 8px; display: flex; gap: 6px; align-items: center; }
+.crange button { background: #1d2739; color: var(--ink2); border: 1px solid var(--grid);
+                 border-radius: 6px; padding: 3px 12px; font-size: 12px; cursor: pointer; }
+.crange button.on { background: #182c44; color: var(--info); border-color: var(--info); }
+#cchart svg { width: 100%; height: auto; display: block; user-select: none; cursor: crosshair; }
+'''
+
+# 캔들차트 렌더러 (상세 페이지 — 서버 지표 + 클라이언트 렌더/줌/툴팁)
+# 색: 국내 관례 상승=빨강/하락=파랑. dataviz: 텍스트는 잉크 토큰, 마크는 얇게.
+CANDLE_JS = r'''
+(function(){
+const el = document.getElementById('cchart');
+if (!el) return;
+const D = JSON.parse(el.dataset.payload), N = D.d.length;
+const W=760, PAD=48, HP=250, HV=54, HR=64, GAP=14, TOPP=20;
+const H = TOPP+HP+GAP+HV+GAP+HR+22;
+const UP='#e0605e', DN='#5ba3f5', C5='#d9a13b', C20='#3fb970', C200='#9aa7bd';
+const tip = document.getElementById('tip');
+let i0 = Math.max(0, N-66), i1 = N, drag = null;
+const evByDate = {};
+(D.ev||[]).forEach(e => { (evByDate[e.d] = evByDate[e.d] || []).push(e); });
+
+function fmt(v){ return v==null ? '—' : v.toLocaleString(); }
+function render(){
+  const n = i1-i0, bw = Math.max(1.5, Math.min(11, (W-2*PAD)/n*0.62));
+  const x = i => PAD + (W-2*PAD)*(i-i0+0.5)/n;
+  let lo=Infinity, hi=-Infinity, vmax=1;
+  for (let i=i0;i<i1;i++){
+    if (D.l[i]!=null && D.l[i]<lo) lo=D.l[i];
+    if (D.h[i]!=null && D.h[i]>hi) hi=D.h[i];
+    ['sma5','sma20','sma200','bbu','bbd'].forEach(k=>{ const v=D[k][i];
+      if(v!=null){ if(v<lo)lo=v; if(v>hi)hi=v; }});
+    if (D.v[i]>vmax) vmax=D.v[i];
+  }
+  const span=(hi-lo)||1;
+  const yp = v => TOPP + HP - HP*(v-lo)/span;
+  const y0v = TOPP+HP+GAP+HV, yv = v => y0v - HV*v/vmax;
+  const y0r = y0v+GAP+HR, yr = v => y0r - HR*Math.max(0,Math.min(100,v))/100;
+  let s = '';
+  // 가격 그리드 + 축
+  for (const f of [0,0.5,1]){ const v=lo+span*f, y=yp(v);
+    s += `<line x1="${PAD}" x2="${W-PAD}" y1="${y}" y2="${y}" class="grid"/>`
+       + `<text x="${PAD-6}" y="${y}" class="axis" text-anchor="end" dominant-baseline="middle">${Math.round(v).toLocaleString()}</text>`; }
+  // BB 밴드 (연한 선)
+  for (const k of ['bbu','bbd']){ let p='';
+    for(let i=i0;i<i1;i++){ if(D[k][i]!=null) p+=`${x(i)},${yp(D[k][i])} `; }
+    if(p) s += `<polyline points="${p}" fill="none" stroke="#3a4763" stroke-width="1" stroke-dasharray="3 3"/>`; }
+  // 캔들 + 거래량
+  for (let i=i0;i<i1;i++){
+    const o=D.o[i],h=D.h[i],l=D.l[i],c=D.c[i]; if(c==null) continue;
+    const col = c>=o ? UP : DN, cx=x(i);
+    s += `<line x1="${cx}" x2="${cx}" y1="${yp(h)}" y2="${yp(l)}" stroke="${col}" stroke-width="1"/>`;
+    const yt=yp(Math.max(o,c)), yb=yp(Math.min(o,c));
+    s += `<rect x="${cx-bw/2}" y="${yt}" width="${bw}" height="${Math.max(1,yb-yt)}" fill="${col}"/>`;
+    s += `<rect x="${cx-bw/2}" y="${yv(D.v[i]||0)}" width="${bw}" height="${y0v-yv(D.v[i]||0)}" fill="#2a3650"/>`;
+  }
+  // SMA 오버레이
+  const smas=[['sma5',C5],['sma20',C20],['sma200',C200]];
+  for (const [k,col] of smas){ let p='';
+    for(let i=i0;i<i1;i++){ if(D[k][i]!=null) p+=`${x(i)},${yp(D[k][i])} `; }
+    if(p) s += `<polyline points="${p}" fill="none" stroke="${col}" stroke-width="1.6"/>`; }
+  // RSI 서브패널
+  s += `<line x1="${PAD}" x2="${W-PAD}" y1="${yr(90)}" y2="${yr(90)}" class="grid"/>`
+     + `<line x1="${PAD}" x2="${W-PAD}" y1="${yr(10)}" y2="${yr(10)}" stroke="#4a3550" stroke-width="1"/>`
+     + `<text x="${PAD-6}" y="${yr(10)}" class="axis" text-anchor="end" dominant-baseline="middle">10</text>`
+     + `<text x="${PAD-6}" y="${yr(90)}" class="axis" text-anchor="end" dominant-baseline="middle">90</text>`;
+  let pr='';
+  for(let i=i0;i<i1;i++){ if(D.rsi[i]!=null) pr+=`${x(i)},${yr(D.rsi[i])} `; }
+  if(pr) s += `<polyline points="${pr}" fill="none" stroke="${DN}" stroke-width="1.4"/>`;
+  s += `<text x="${PAD}" y="${y0r+16}" class="axis">RSI(2)</text>`;
+  // 이벤트 마커 (뉴스/공시)
+  for (let i=i0;i<i1;i++){ const evs=evByDate[D.d[i]];
+    if(evs) s += `<text x="${x(i)}" y="${TOPP-6}" text-anchor="middle" font-size="11">${evs.some(e=>e.k=='news')?'📰':'📋'}</text>`; }
+  // 범례
+  s += `<text x="${W-PAD}" y="12" text-anchor="end" class="axis">`
+     + `<tspan fill="${C5}">SMA5</tspan> <tspan fill="${C20}">SMA20</tspan> <tspan fill="${C200}">SMA200</tspan></text>`;
+  s += `<line id="cxh" y1="${TOPP}" y2="${y0r}" class="crosshair" visibility="hidden"/>`;
+  s += `<rect id="selr" y="${TOPP}" height="${HP}" fill="#5ba3f5" opacity="0.15" visibility="hidden"/>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}">${s}</svg>`;
+  bind();
+}
+function idxAt(svg, clientX){
+  const r = svg.getBoundingClientRect();
+  const mx = (clientX-r.left)*W/r.width;
+  return Math.max(i0, Math.min(i1-1, i0+Math.floor((mx-PAD)/((W-2*PAD)/(i1-i0)))));
+}
+function bind(){
+  const svg = el.querySelector('svg'), xh = el.querySelector('#cxh'), selr = el.querySelector('#selr');
+  const xOf = i => PAD + (W-2*PAD)*(i-i0+0.5)/(i1-i0);
+  svg.addEventListener('mousemove', ev => {
+    const i = idxAt(svg, ev.clientX), cx = xOf(i);
+    xh.setAttribute('x1',cx); xh.setAttribute('x2',cx); xh.removeAttribute('visibility');
+    if (drag!=null){ const a=Math.min(xOf(drag),cx), b=Math.max(xOf(drag),cx);
+      selr.setAttribute('x',a); selr.setAttribute('width',b-a); selr.removeAttribute('visibility'); }
+    const chg = (i>0 && D.c[i-1]) ? ((D.c[i]/D.c[i-1]-1)*100).toFixed(2)+'%' : '';
+    let lines = [`${D.d[i]}  ${chg}`,
+      `시 ${fmt(D.o[i])}  고 ${fmt(D.h[i])}  저 ${fmt(D.l[i])}  종 ${fmt(D.c[i])}`,
+      `량 ${fmt(D.v[i])}  RSI2 ${D.rsi[i]==null?'—':D.rsi[i].toFixed(1)}`,
+      `SMA5 ${fmt(D.sma5[i])}  20 ${fmt(D.sma20[i])}  200 ${fmt(D.sma200[i])}`];
+    (evByDate[D.d[i]]||[]).forEach(e => lines.push((e.k=='news'?'📰 ':'📋 ')+e.t.slice(0,42)));
+    tip.hidden=false; tip.textContent=lines.join('\n');
+    tip.style.left=(ev.clientX+14)+'px'; tip.style.top=(ev.clientY-10)+'px';
+  });
+  svg.addEventListener('mouseleave', () => { tip.hidden=true; xh.setAttribute('visibility','hidden');
+    selr.setAttribute('visibility','hidden'); drag=null; });
+  svg.addEventListener('mousedown', ev => { drag = idxAt(svg, ev.clientX); ev.preventDefault(); });
+  svg.addEventListener('mouseup', ev => {
+    if (drag==null) return;
+    const j = idxAt(svg, ev.clientX), a=Math.min(drag,j), b=Math.max(drag,j);
+    drag=null; selr.setAttribute('visibility','hidden');
+    if (b-a >= 3){ i0=a; i1=b+1; render(); }
+  });
+  svg.addEventListener('dblclick', () => { i0=Math.max(0,N-66); i1=N; setBtn(66); render(); });
+}
+function setBtn(n){ document.querySelectorAll('.crange button').forEach(b =>
+  b.classList.toggle('on', +b.dataset.n===n)); }
+document.querySelectorAll('.crange button').forEach(b => b.addEventListener('click', () => {
+  const n = +b.dataset.n; i0 = n ? Math.max(0, N-n) : 0; i1 = N; setBtn(n); render(); }));
+render();
+})();
 '''
 
 CHART_JS = r'''
@@ -520,9 +641,19 @@ def render_stock(code: str, cache=None) -> str:
     else:
         dart_html = '<div class="empty">최근 30일 공시 없음 (또는 수집 중)</div>'
 
-    chart = svg_chart({name: [(f'{ts:%Y-%m-%d}', float(v)) for ts, v in s.iloc[-60:].items()]},
-                      {name: C_ACCT}) if s is not None and len(s) else \
-        '<div class="empty">차트 데이터 수집 중</div>'
+    payload = chart_payload((snap.get('ohlcv') or {}).get(code), nrows, drows)
+    if payload:
+        pj = html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
+        chart = f'''<div class="crange">
+<button data-n="22">1M</button><button data-n="66" class="on">3M</button>
+<button data-n="132">6M</button><button data-n="0">전체</button>
+<span class="muted small">드래그 = 구간 확대 · 더블클릭 = 리셋 · 마커: 📰뉴스 📋공시</span></div>
+<div id="cchart" data-payload="{pj}"></div>'''
+    elif s is not None and len(s):  # ohlcv 캐시 갱신 전 폴백 (구캐시 호환)
+        chart = svg_chart({name: [(f'{ts:%Y-%m-%d}', float(v)) for ts, v in s.iloc[-60:].items()]},
+                          {name: C_ACCT})
+    else:
+        chart = '<div class="empty">차트 데이터 수집 중</div>'
     held_html = (f"<span class='badge good'>보유 {held['qty']}주 @{held['entry_price']:,.0f} "
                  f"({held['entry_date']}~)</span>" if held else '')
 
@@ -533,12 +664,13 @@ def render_stock(code: str, cache=None) -> str:
 <h1 style="margin-top:8px">{html.escape(name)} <span class="muted">{html.escape(code)}</span> {held_html}</h1>
 <div class="sub">기술 상태: {tech}{rank_txt} · 데이터는 참고용 (투자 판단 아님)</div>
 <div class="cards">{cards}</div>
-<div class="panel"><h2>최근 60일 종가</h2>{chart}</div>
+<div class="panel"><h2>일봉 차트 — SMA5·20·200 / BB(20,2) / RSI(2) / 거래량</h2>{chart}</div>
 <div class="panel"><h2>재무비율 (연간, KIS 제공)</h2>{fin_html}</div>
 <div class="panel"><h2>최근 뉴스 (네이버 검색)</h2>{news_html}</div>
 <div class="panel"><h2>최근 공시 (30일, DART)</h2>{dart_html}</div>
 <div id="tip" class="tip" hidden></div>
 <script>{CHART_JS}</script>
+<script>{CANDLE_JS}</script>
 </body></html>'''
 
 

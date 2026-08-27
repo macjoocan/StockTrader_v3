@@ -224,6 +224,25 @@ def test_parse_naver_news_strips_and_dates():
     assert parse_naver_news({}) == []
 
 
+def test_chart_payload_indicators_and_events():
+    from dashboard_data import chart_payload
+    n = 30
+    idx = pd.bdate_range(end='2026-08-28', periods=n)
+    df = pd.DataFrame({'open': 100.0, 'high': 102.0, 'low': 99.0,
+                       'close': np.linspace(100, 110, n), 'volume': 1000.0}, index=idx)
+    news = [{'iso': f'{idx[-1]:%Y-%m-%d}', 'title': '기사A', 'url': 'u', 'date': 'x'},
+            {'iso': '2020-01-01', 'title': '범위밖', 'url': 'u', 'date': 'x'}]
+    dart = [{'date': f'{idx[-2]:%Y%m%d}', 'title': '공시B', 'url': 'u'}]
+    p = chart_payload(df, news, dart)
+    assert len(p['d']) == n == len(p['c']) == len(p['rsi']) == len(p['sma20'])
+    assert p['sma20'][10] is None and p['sma20'][25] is not None  # 워밍업 None
+    assert p['sma200'][-1] is None  # 데이터 부족
+    evs = {(e['k'], e['t']) for e in p['ev']}
+    assert ('news', '기사A') in evs and ('dart', '공시B') in evs
+    assert not any(e['t'] == '범위밖' for e in p['ev'])
+    assert chart_payload(None) == {} and chart_payload(pd.DataFrame()) == {}
+
+
 def test_gate_status():
     g = gate_status(date(2026, 8, 22))
     assert g['d_left'] == 23 and g['over'] is False
