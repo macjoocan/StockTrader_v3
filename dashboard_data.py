@@ -454,7 +454,9 @@ class MarketCache:
         for code in codes:
             if code == CORE_CODE:
                 continue
-            q = self.names.get(code) or code
+            name = self.names.get(code) or code
+            # 2글자 이하 종목명(기아 등)은 동음이의 노이즈(야구단...) -> '주가' 붙여 문맥 고정
+            q = f'{name} 주가' if len(name) <= 2 else name
             try:
                 r = requests.get(NAVER_URL, headers=headers,
                                  params={'query': q, 'display': 5, 'sort': 'date'},
