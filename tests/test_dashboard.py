@@ -64,7 +64,7 @@ def test_page_renders_with_fake_cache(tmp_path, monkeypatch):
     page = dashboard.render_page(cache=cache)
     for expected in ('068270', '셀트리온', '/stock/068270', '50,393,970', 'KODEX 200',
                      '시그널 레이더', 'RSI2', '실현손익', '운영 리포트', 'D-', '테스트 캐시',
-                     '팩터 랭킹', '매매 미연결'):
+                     '팩터 랭킹', '매매 미연결', '종목 진단 카드', '추천 아님'):
         assert expected in page, expected
 
 

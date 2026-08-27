@@ -132,6 +132,43 @@ def test_factor_ranking_skips_sparse_metric():
     assert all(r['total'] is None for r in rows2)
 
 
+def _diag_setup():
+    n = 250
+    up = series(list(np.linspace(100, 130, n)))          # SMA200 위, RSI 보통
+    down = series(list(np.linspace(130, 100, n - 1)) + [102.0])  # SMA200 아래
+    quotes = {
+        'GOOD': {'stck_prpr': str(up.iloc[-1]), 'per': '5', 'pbr': '0.8', 'hts_frgn_ehrt': '30'},
+        'DEBTY': {'stck_prpr': str(up.iloc[-1]), 'per': '8', 'pbr': '1.0'},
+        'EXPS': {'stck_prpr': str(up.iloc[-1]), 'per': '80', 'pbr': '9.0'},
+        'WEAK': {'stck_prpr': str(down.iloc[-1]), 'per': '15', 'pbr': '2.0'},
+    }
+    fin = {
+        'GOOD': [{'roe_val': '15', 'lblt_rate': '40'}],
+        'DEBTY': [{'roe_val': '10', 'lblt_rate': '350'}],   # 재무 주의
+        'EXPS': [{'roe_val': '9', 'lblt_rate': '80'}],
+        'WEAK': [{'roe_val': '5', 'lblt_rate': '90'}],
+    }
+    closes = {'GOOD': up, 'DEBTY': up, 'EXPS': up, 'WEAK': down}
+    return quotes, fin, closes
+
+
+def test_diagnose_cards_rules():
+    from dashboard_data import diagnose_cards
+    quotes, fin, closes = _diag_setup()
+    cards = {c['code']: c for c in diagnose_cards(quotes, fin, closes, holdings={'GOOD'})}
+    assert cards['DEBTY']['grade'] == '재무 주의' and '부채비율' in cards['DEBTY']['reasons'][0]
+    assert cards['GOOD']['grade'] == '저평가·우량' and cards['GOOD']['holding'] is True
+    assert cards['EXPS']['grade'] == '고평가'
+    assert cards['WEAK']['grade'] == '추세 약세' and cards['WEAK']['above200'] is False
+
+
+def test_diagnose_cards_sorted_by_total():
+    from dashboard_data import diagnose_cards
+    quotes, fin, closes = _diag_setup()
+    cards = diagnose_cards(quotes, fin, closes, holdings=set())
+    assert cards[0]['code'] == 'GOOD'  # 종합 최고가 앞
+
+
 def test_gate_status():
     g = gate_status(date(2026, 8, 22))
     assert g['d_left'] == 23 and g['over'] is False

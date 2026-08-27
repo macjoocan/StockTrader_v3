@@ -18,9 +18,9 @@ from flask import Flask
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, str(Path(__file__).parent))
 
-from dashboard_data import (CORE_CODE, enrich_positions, factor_ranking,  # noqa: E402
-                            fin_rows, gate_status, indexed_pair, ops_report,
-                            radar_rows, realized_trades, valuation_row)
+from dashboard_data import (CORE_CODE, diagnose_cards, enrich_positions,  # noqa: E402
+                            factor_ranking, fin_rows, gate_status, indexed_pair,
+                            ops_report, radar_rows, realized_trades, valuation_row)
 
 KST = timezone(timedelta(hours=9))
 DATA_DIR = Path(os.environ.get('DATA_DIR') or './data-volume')
@@ -215,6 +215,46 @@ def render_page(cache=None) -> str:
     radar_html = ''.join(radar_row(r) for r in radar) or \
         '<tr><td colspan="5" class="empty">시장 데이터 수집 중 (기동 후 ~1분)</td></tr>'
 
+    # -- 종목 진단 카드 (규칙 기반 서술) --
+    uni_quotes_all = {c: q for c, q in (snap.get('quotes') or {}).items() if c != CORE_CODE}
+    dcards = diagnose_cards(uni_quotes_all, snap.get('fin') or {},
+                            {c: s for c, s in closes.items() if c != CORE_CODE},
+                            holdings=set(state['positions']))
+
+    def bar(label, v, suffix=''):
+        if v is None:
+            return f'<div class="brow"><span>{label}</span><i class="btrack"></i><b>—</b></div>'
+        w = max(2, min(100, round(v)))
+        return (f'<div class="brow"><span>{label}</span>'
+                f'<i class="btrack"><i class="bfill" style="width:{w}%"></i></i>'
+                f'<b>{v:.0f}{suffix}</b></div>')
+
+    def dcard(c):
+        badges = f'<span class="badge {c["grade_cls"]}">{c["grade"]}</span>'
+        if c['signal']:
+            badges += ' <span class="badge crit">신호권</span>'
+        if c['holding']:
+            badges += ' 📌'
+        chg = c['chg_pct']
+        chg_html = (f"<span class='{cls_pnl(chg)}'>{chg:+.2f}%</span>"
+                    if chg is not None else '')
+        tech = []
+        if c['above200'] is not None:
+            tech.append(f"SMA200 {'위' if c['above200'] else '아래'}")
+        if c['rsi2'] is not None:
+            tech.append(f"RSI2 {c['rsi2']:.0f}")
+        if c['w52_band'] is not None:
+            tech.append(f"52주 {c['w52_band']*100:.0f}%")
+        return f'''<a class="dcard" href="/stock/{c['code']}">
+<div class="dhead"><b>{html.escape(nm(c['code']))}</b> {badges}</div>
+<div class="dprice">{won(c['cur'])} {chg_html} <span class="muted small">#{c['rank'] or '—'}</span></div>
+{bar('가치', c['value'])}{bar('퀄리티', c['quality'])}{bar('외인', c['frgn_rate'], '%')}
+<div class="dtech muted small">{' · '.join(tech) or '—'}</div>
+<div class="dwhy small">{html.escape(' / '.join(c['reasons']))}</div></a>'''
+
+    dcards_html = ''.join(dcard(c) for c in dcards) or \
+        '<div class="empty">시장 데이터 수집 중</div>'
+
     # -- 팩터 랭킹 (Tier 2: 정보성) --
     uni_quotes = {c: q for c, q in (snap.get('quotes') or {}).items() if c != CORE_CODE}
     franks = factor_ranking(uni_quotes, snap.get('fin') or {})
@@ -296,6 +336,10 @@ def render_page(cache=None) -> str:
 <table><tr><th>종목 (📌보유)</th><th class="num">현재가</th><th class="num">등락</th>
 <th class="num">RSI2</th><th>SMA200</th></tr>{radar_html}</table></div>
 </div>
+<div class="panel"><h2>종목 진단 카드 — 규칙 기반 서술
+<span class="badge warn">참고용 · 추천 아님</span>
+<span class="muted small">규칙: 부채≥200%→재무주의 | 종합≥70+추세위→저평가·우량 | 가치≤25→고평가 | SMA200 아래→추세약세</span></h2>
+<div class="dgrid">{dcards_html}</div></div>
 <div class="panel"><h2>팩터 랭킹 — 가치(PER·PBR)·퀄리티(ROE·부채비율) 순위점수
 <span class="badge warn">참고용 · 백테 미검증 · 매매 미연결</span></h2>
 <table><tr><th class="num">순위</th><th>종목 (📌보유)</th><th class="num">PER</th><th class="num">PBR</th>
@@ -350,6 +394,16 @@ STYLE_EXTRA = '''
 .stk { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--muted); }
 .small { font-size: 11px; }
 .back { color: var(--info); text-decoration: none; font-size: 13px; }
+.dgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(225px, 1fr)); gap: 10px; }
+.dcard { display: block; background: #121a29; border: 1px solid var(--grid); border-radius: 10px;
+         padding: 12px 14px; color: var(--ink); text-decoration: none; }
+.dcard:hover { border-color: var(--info); }
+.dhead { margin-bottom: 4px; } .dprice { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+.brow { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink2); margin: 3px 0; }
+.brow span { width: 34px; } .brow b { width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+.btrack { flex: 1; height: 6px; background: #1d2739; border-radius: 3px; display: block; overflow: hidden; }
+.bfill { display: block; height: 100%; background: var(--info); border-radius: 3px; }
+.dtech { margin-top: 6px; } .dwhy { color: var(--muted); margin-top: 3px; }
 '''
 
 CHART_JS = r'''

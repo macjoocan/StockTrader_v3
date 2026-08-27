@@ -232,6 +232,58 @@ def factor_ranking(quotes: dict, fin: dict) -> list:
     return rows
 
 
+# ---- 종목 진단 카드 (규칙 기반 서술 — "추천" 아님, 근거 동시 표시) ----
+
+DEBT_ALERT = 200.0   # 부채비율 이상 -> 재무 주의
+TOTAL_GOOD = 70      # 팩터 종합 이 이상 & 추세 위 -> 저평가·우량
+VALUE_EXPENSIVE = 25  # 가치점수 이하(=비쌈) -> 고평가
+
+
+def diagnose_cards(quotes: dict, fin: dict, closes_map: dict, holdings: set) -> list:
+    """유니버스 진단 카드. 등급은 명시 규칙으로만 산출, reasons에 근거 문자열."""
+    franks = {r['code']: r for r in factor_ranking(quotes, fin)}
+    cards = []
+    for code, q in (quotes or {}).items():
+        v = valuation_row(q)
+        f = franks.get(code, {})
+        s = closes_map.get(code)
+        rsi2, above200, sma5_dist, signal = None, None, None, False
+        if s is not None and len(s) >= SMA_LONG:
+            rsi2 = float(rsi(s, 2).iloc[-1])
+            above200 = float(s.iloc[-1]) > float(sma(s, SMA_LONG).iloc[-1])
+            s5 = float(sma(s, SMA_EXIT).iloc[-1])
+            sma5_dist = float(s.iloc[-1]) / s5 - 1.0 if s5 else None
+            signal = bool(above200 and rsi2 < RSI_BUY)
+
+        reasons, grade = [], ('중립', 'muted')
+        if (f.get('debt') or 0) >= DEBT_ALERT:
+            grade = ('재무 주의', 'crit')
+            reasons.append(f"부채비율 {f['debt']:.0f}% ≥ {DEBT_ALERT:.0f}%")
+        elif f.get('total') is not None and f['total'] >= TOTAL_GOOD and above200:
+            grade = ('저평가·우량', 'good')
+            reasons.append(f"팩터 종합 {f['total']} ≥ {TOTAL_GOOD} + SMA200 위")
+        elif f.get('value') is not None and f['value'] <= VALUE_EXPENSIVE:
+            grade = ('고평가', 'warn')
+            reasons.append(f"가치점수 {f['value']} ≤ {VALUE_EXPENSIVE} (유니버스 내 비쌈)")
+        elif above200 is False:
+            grade = ('추세 약세', 'warn')
+            reasons.append('SMA200 아래')
+        else:
+            reasons.append('특이 규칙 미해당')
+
+        cards.append({
+            'code': code, 'cur': v['cur'], 'chg_pct': v['chg_pct'],
+            'value': f.get('value'), 'quality': f.get('quality'),
+            'total': f.get('total'), 'rank': f.get('rank'),
+            'frgn_rate': v['frgn_rate'], 'w52_band': v['w52_band'],
+            'rsi2': rsi2, 'above200': above200, 'sma5_dist': sma5_dist,
+            'signal': signal, 'holding': code in holdings,
+            'grade': grade[0], 'grade_cls': grade[1], 'reasons': reasons,
+        })
+    cards.sort(key=lambda c: (c['total'] is None, -(c['total'] or 0)))
+    return cards
+
+
 def gate_status(today: date) -> dict:
     d_left = (GATE_END - today).days
     return {'end': GATE_END.isoformat(), 'd_left': d_left, 'over': d_left < 0}
