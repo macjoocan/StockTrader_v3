@@ -1,11 +1,60 @@
 import dataclasses
 
 from broker.kis import Fill
-from portfolio.allocator import CORE_CODE, core_rebalance, size_buy, slot_budget
+from portfolio.allocator import (CORE_CODE, US_CORE, core_rebalance, size_buy,
+                                 slot_budget, us_core_orders)
 from reconcile import reconcile
 from signal_engine.strategy import scan
 
 SLOTS = 4
+US_LIMIT_BUFFER = 0.01  # 해외 정규장 지정가만 지원 -> 현재가 ±1% 버퍼로 체결 보장
+
+
+def run_us_core(broker, state, today_ym, log, notifier):
+    """미국 코어 슬리브 월간 리밸 (코어 온리 — 신호 없음). USD 자금 없으면 대기.
+    성공(주문 완료 또는 불필요) 시 last_us_rebal_ym 마킹."""
+    snap = broker.us_snapshot()
+    prices = {}
+    for symb, excd in US_CORE:
+        prices[symb] = broker.us_price(symb, excd)
+    holdings = {s: q for s, (q, _) in snap['holdings'].items()}
+    total = snap['usd_cash'] + sum(holdings.get(s, 0) * prices.get(s, 0)
+                                   for s, _ in US_CORE)
+    if total < 100:  # 해외주식 모의 미신청/미환전 상태
+        log.write('us_core', status='자금없음', usd=snap['usd_cash'])
+        if not state.get('us_wait_notified'):
+            notifier.send('🇺🇸 미국 코어: USD 예수금 없음 — 해외주식 모의투자 신청(또는 환전) 대기')
+            state['us_wait_notified'] = True
+        return False
+    orders = us_core_orders(snap['usd_cash'], holdings, prices)
+    excd_of = dict(US_CORE)
+    cash = snap['usd_cash']
+    fills, fails = [], []
+    for o in orders:
+        px = prices[o.code]
+        limit = px * (1 + US_LIMIT_BUFFER) if o.side == 'BUY' else px * (1 - US_LIMIT_BUFFER)
+        qty = o.qty
+        if o.side == 'BUY':
+            qty = min(qty, int(cash // limit))  # 현금 상한
+            if qty <= 0:
+                continue
+        f = broker.us_limit_order(o.code, excd_of[o.code], o.side, qty, limit)
+        log.write('us_fill' if f.ok else 'error', code=o.code, side=o.side,
+                  qty=qty, price=f.price, ok=f.ok, reason=f.reason)
+        if f.ok:
+            fills.append(f)
+            cash += -f.price * qty if o.side == 'BUY' else f.price * qty
+        else:
+            fails.append(f)
+            notifier.send(f'❌ 미국 주문 실패: {o.code} {o.side} {qty} — {f.reason[:80]}')
+    if fails:
+        return False  # 실패 있으면 다음날 재시도 (ym 미마킹)
+    state['last_us_rebal_ym'] = today_ym
+    hold_txt = ' '.join(f'{s} {holdings.get(s, 0)}주' for s, _ in US_CORE)
+    notifier.send(f'🇺🇸 미국 코어 리밸 {today_ym}: 주문 {len(fills)}건, '
+                  f'총 ${total:,.0f} (현금 ${snap["usd_cash"]:,.0f}, {hold_txt})')
+    log.write('us_core', status='완료', orders=len(fills), total_usd=round(total, 2))
+    return True
 
 
 def run_daily(broker, universe, state, today, log, notifier, do_rebalance):

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from broker.kis import KisBroker          # noqa: E402
 from config import load_config            # noqa: E402
 from events.log import EventLog           # noqa: E402
-from executor import run_daily            # noqa: E402
+from executor import run_daily, run_us_core  # noqa: E402
 from notify.telegram import Notifier      # noqa: E402
 from reconcile import load_state, save_state  # noqa: E402
 from scheduler import next_action         # noqa: E402
@@ -34,6 +34,7 @@ def main():
     notifier.send('🟢 stock-trader 시작')
 
     last_hb = None
+    last_us_check = None  # 메모리만 (재시작 시 재체크 무해 — 조회 2콜)
     while True:
         try:
             now = datetime.now(KST)
@@ -45,8 +46,19 @@ def main():
                 print(f'[{now:%F %T}] last_trade_date 파싱 오류: {e}', flush=True)
                 log.write('error', msg=f'last_trade_date parse: {e}')
                 ltd = None
-            action = next_action(now, last_hb, ltd)
-            if action == 'heartbeat':
+            action = next_action(now, last_hb, ltd, last_us_date=last_us_check)
+            if action == 'us_core':
+                last_us_check = now.date()
+                # 월 1회만 실제 리밸 (미실행 사유: 이미 이번 달 완료)
+                if state.get('last_us_rebal_ym') != f'{now:%Y-%m}':
+                    try:
+                        run_us_core(broker, state, f'{now:%Y-%m}', log, notifier)
+                    except Exception as e:
+                        print(f'[{now:%F %T}] 미국 코어 오류: {e}', flush=True)
+                        log.write('error', msg=f'us_core: {e}')
+                    finally:
+                        save_state(state_path, state)
+            elif action == 'heartbeat':
                 print(f'[{now:%F %T}] heartbeat 보유 {len(state["positions"])}')
                 last_hb = now
                 # 토큰 선제 갱신 — 일일작업 직전(15:19~)에 발급할 일이 없도록 (VTS 그 시간대 지연 실측)

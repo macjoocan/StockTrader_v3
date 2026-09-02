@@ -263,6 +263,55 @@ class KisBroker:
             'FID_COND_MRKT_DIV_CODE': 'J', 'FID_INPUT_ISCD': code})
         return float(data['output']['stck_prpr'])
 
+    # ---- 해외주식 (미국 코어 슬리브 — 코어 온리, 시세/잔고/지정가 주문) ----
+    # 해외 정규장은 시장가 미지원 -> 지정가(현재가 버퍼) 방식. 모의 TR 비대칭 주의(매도 VTTT1001U)
+
+    US_ORDER_TR = {('live', 'BUY'): 'TTTT1002U', ('live', 'SELL'): 'TTTT1006U',
+                   ('paper', 'BUY'): 'VTTT1002U', ('paper', 'SELL'): 'VTTT1001U'}
+    US_BAL_TR = {'live': 'TTTS3012R', 'paper': 'VTTS3012R'}
+    US_PSAMT_TR = {'live': 'TTTS3007R', 'paper': 'VTTS3007R'}
+
+    def us_price(self, symb: str, excd: str) -> float:
+        d = self._request('GET', '/uapi/overseas-price/v1/quotations/price',
+                          'HHDFS00000300', params={'AUTH': '', 'EXCD': excd, 'SYMB': symb})
+        return float(d['output']['last'])
+
+    def us_snapshot(self, probe_symb: str = 'SPY', probe_px: str = '500') -> dict:
+        """미국 보유 + USD 주문가능금액 + 환율. holdings: {symb: (qty, last_usd)}"""
+        d = self._request('GET', '/uapi/overseas-stock/v1/trading/inquire-balance',
+                          self.US_BAL_TR[self.mode],
+                          params={'CANO': self.cano, 'ACNT_PRDT_CD': self.prdt,
+                                  'OVRS_EXCG_CD': 'NASD', 'TR_CRCY_CD': 'USD',
+                                  'CTX_AREA_FK200': '', 'CTX_AREA_NK200': ''})
+        holdings = {}
+        for r in d.get('output1') or []:
+            qty = int(float(r.get('ovrs_cblc_qty') or 0))
+            if qty > 0:
+                holdings[r.get('ovrs_pdno')] = (qty, float(r.get('now_pric2') or 0))
+        p = self._request('GET', '/uapi/overseas-stock/v1/trading/inquire-psamount',
+                          self.US_PSAMT_TR[self.mode],
+                          params={'CANO': self.cano, 'ACNT_PRDT_CD': self.prdt,
+                                  'OVRS_EXCG_CD': 'NASD', 'OVRS_ORD_UNPR': probe_px,
+                                  'ITEM_CD': probe_symb})
+        o = p.get('output') or {}
+        return {'holdings': holdings,
+                'usd_cash': float(o.get('ord_psbl_frcr_amt') or 0),
+                'exrt': float(o.get('exrt') or 0)}
+
+    def us_limit_order(self, symb: str, excd: str, side: str, qty: int,
+                       limit_price: float) -> Fill:
+        """미국 지정가 주문. 체결가는 지정가로 기록(코어 리밸 용도로 충분)."""
+        try:
+            body = {'CANO': self.cano, 'ACNT_PRDT_CD': self.prdt,
+                    'OVRS_EXCG_CD': excd, 'PDNO': symb,
+                    'ORD_QTY': str(qty), 'OVRS_ORD_UNPR': f'{limit_price:.2f}',
+                    'ORD_DVSN': '00', 'ORD_SVR_DVSN_CD': '0'}
+            self._request('POST', '/uapi/overseas-stock/v1/trading/order',
+                          self.US_ORDER_TR[(self.mode, side)], body=body)
+        except Exception as e:
+            return Fill(symb, side, qty, 0.0, ok=False, reason=str(e))
+        return Fill(symb, side, qty, float(limit_price), ok=True)
+
     # ---- 주문 ----
 
     def market_order(self, code: str, side: str, qty: int) -> Fill:

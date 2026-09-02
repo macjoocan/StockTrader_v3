@@ -199,6 +199,15 @@ def render_page(cache=None) -> str:
         ('사이클 성공/스킵', f"{rep['summary_days']} / {rep['skip_days']}",
          'warn2' if rep['skip_days'] else ''),
     ]
+    us = snap.get('us')
+    if us:
+        us_total = us['usd_cash'] + sum(
+            q * (us.get('prices') or {}).get(s, px) for s, (q, px) in us['holdings'].items())
+        if us_total < 100:
+            cards.append(('미국 코어 (SPY/QQQ)', '자금 대기', 'warn2'))
+        else:
+            h = ' '.join(f'{s}{q}' for s, (q, _) in us['holdings'].items()) or '현금만'
+            cards.append(('미국 코어 (SPY/QQQ)', f'${us_total:,.0f} · {h}', ''))
     cards_html = ''.join(
         f'<div class="card"><div class="k">{k}</div><div class="v {c}">{v}</div></div>'
         for k, v, c in cards)

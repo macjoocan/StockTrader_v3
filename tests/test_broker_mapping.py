@@ -264,3 +264,29 @@ def test_balance_continuation_accumulates_and_forwards_ctx():
     assert calls[1][1] == 'N'  # 연속조회 헤더
     assert calls[1][0]['CTX_AREA_FK100'] == 'FK1'
     assert calls[1][0]['CTX_AREA_NK100'] == 'NK1'
+
+
+def test_us_order_tr_mapping_asymmetric_paper_sell():
+    # 공식 예제: 미국 매도 모의 TR은 VTTT1001U (매수 VTTT1002U와 비대칭 — 오타 아님)
+    assert KisBroker.US_ORDER_TR[('paper', 'BUY')] == 'VTTT1002U'
+    assert KisBroker.US_ORDER_TR[('paper', 'SELL')] == 'VTTT1001U'
+    assert KisBroker.US_ORDER_TR[('live', 'SELL')] == 'TTTT1006U'
+
+
+def test_us_limit_order_control_flow():
+    b = KisBroker.__new__(KisBroker)
+    b.mode, b.cano, b.prdt = 'paper', '12345678', '01'
+    sent = {}
+
+    def fake_request(method, path, tr_id, params=None, body=None, tr_cont=''):
+        sent.update({'tr': tr_id, 'body': body})
+        return {'rt_cd': '0', 'output': {'ODNO': '1'}}
+
+    b._request = fake_request
+    f = b.us_limit_order('SPY', 'AMS', 'BUY', 3, 772.73)
+    assert f.ok and f.price == 772.73
+    assert sent['tr'] == 'VTTT1002U'
+    assert sent['body']['OVRS_ORD_UNPR'] == '772.73' and sent['body']['ORD_DVSN'] == '00'
+    b._request = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('장운영시간'))
+    f2 = b.us_limit_order('SPY', 'AMS', 'SELL', 1, 700.0)
+    assert f2.ok is False and '장운영시간' in f2.reason

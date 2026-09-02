@@ -223,3 +223,58 @@ def test_broker_exception_does_not_crash_run_daily():
     run_daily(broker, ['AAA'], state, '2026-08-12', FakeLog(), notif, do_rebalance=False)
     assert state['positions'] == {}
     assert any('❌ 주문 실패' in m for m in notif.msgs)
+
+
+class FakeUsBroker:
+    def __init__(self, usd_cash=10000.0, holdings=None, order_fails=False):
+        self._snap = {'usd_cash': usd_cash,
+                      'holdings': {s: (q, 700.0) for s, q in (holdings or {}).items()},
+                      'exrt': 1370.0}
+        self.order_fails = order_fails
+        self.orders = []
+
+    def us_snapshot(self):
+        return self._snap
+
+    def us_price(self, symb, excd):
+        return 700.0
+
+    def us_limit_order(self, symb, excd, side, qty, limit):
+        self.orders.append((symb, side, qty, round(limit, 2)))
+        if self.order_fails:
+            return Fill(symb, side, qty, 0.0, ok=False, reason='rejected')
+        return Fill(symb, side, qty, limit, ok=True)
+
+
+def test_us_core_initial_buy_and_marks_month():
+    from executor import run_us_core
+    b, log, notif = FakeUsBroker(), FakeLog(), FakeNotifier()
+    state = base_state()
+    ok = run_us_core(b, state, '2026-09', log, notif)
+    assert ok is True and state['last_us_rebal_ym'] == '2026-09'
+    sides = [(o[0], o[1]) for o in b.orders]
+    assert ('SPY', 'BUY') in sides and ('QQQ', 'BUY') in sides
+    buy = b.orders[0]
+    assert buy[3] == round(700.0 * 1.01, 2)  # 매수 지정가 +1% 버퍼
+    assert any('미국 코어 리밸' in m for m in notif.msgs)
+
+
+def test_us_core_no_funds_waits_and_notifies_once():
+    from executor import run_us_core
+    b, log, notif = FakeUsBroker(usd_cash=0.0), FakeLog(), FakeNotifier()
+    state = base_state()
+    assert run_us_core(b, state, '2026-09', log, notif) is False
+    assert 'last_us_rebal_ym' not in state or state.get('last_us_rebal_ym') != '2026-09'
+    assert state.get('us_wait_notified') is True
+    n1 = len(notif.msgs)
+    run_us_core(b, state, '2026-09', log, notif)  # 2회차 -> 추가 알림 없음
+    assert len(notif.msgs) == n1
+
+
+def test_us_core_order_fail_no_month_mark():
+    from executor import run_us_core
+    b, log, notif = FakeUsBroker(order_fails=True), FakeLog(), FakeNotifier()
+    state = base_state()
+    assert run_us_core(b, state, '2026-09', log, notif) is False
+    assert state.get('last_us_rebal_ym') != '2026-09'  # 다음날 재시도 대상
+    assert any('실패' in m for m in notif.msgs)

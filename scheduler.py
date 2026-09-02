@@ -7,8 +7,22 @@ TRADE_CUTOFF = time(15, 25)  # 이 이후엔 장외 시장가 발사 위험 -> t
 HEARTBEAT_SEC = 240
 
 
+# 미국 코어 체크 창: KST 00:30~00:45 = 미국 정규장 내 (DST 무관: 서머 22:30~05:00, 표준 23:30~06:00)
+# KST 화~토 새벽 = 미국 월~금 세션
+US_FROM, US_TO = time(0, 30), time(0, 45)
+
+
 def next_action(now: datetime, last_hb: datetime | None,
-                last_trade_date: date | None) -> str:
+                last_trade_date: date | None,
+                last_us_date: date | None = None) -> str:
+    if (now.weekday() in (1, 2, 3, 4, 5) and US_FROM <= now.time() <= US_TO
+            and last_us_date != now.date()):
+        return 'us_core'
+    return _next_action_kr(now, last_hb, last_trade_date)
+
+
+def _next_action_kr(now: datetime, last_hb: datetime | None,
+                    last_trade_date: date | None) -> str:
     """Determine next action based on time and trade history.
 
     Args:

@@ -69,3 +69,22 @@ def test_trade_at_exact_cutoff():
     """Boundary: 정각 15:25:00은 여전히 trade 가능 (<= TRADE_CUTOFF)."""
     at_cutoff = datetime(2026, 8, 10, 15, 25, 0)
     assert next_action(at_cutoff, last_hb=at_cutoff, last_trade_date=None) == 'trade'
+
+
+def test_us_core_window():
+    from datetime import timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+    tue_0030 = datetime(2026, 9, 1, 0, 30, tzinfo=KST)   # 화요일 새벽 = 미국 월요일 세션
+    assert next_action(tue_0030, tue_0030, None, last_us_date=None) == 'us_core'
+    # 오늘 이미 체크됨 -> us_core 아님 (국내 로직으로 폴스루: hb 직후라 sleep)
+    assert next_action(tue_0030, tue_0030, None, last_us_date=date(2026, 9, 1)) == 'sleep'
+    mon_0030 = datetime(2026, 8, 31, 0, 30, tzinfo=KST)  # 월요일 새벽 = 미국 일요일(휴장)
+    assert next_action(mon_0030, mon_0030, None, last_us_date=None) != 'us_core'
+    tue_0050 = datetime(2026, 9, 1, 0, 50, tzinfo=KST)   # 창 밖
+    assert next_action(tue_0050, tue_0050, None, last_us_date=None) != 'us_core'
+    sat_0030 = datetime(2026, 9, 5, 0, 30, tzinfo=KST)   # 토요일 새벽 = 미국 금요일 세션
+    assert next_action(sat_0030, sat_0030, None, last_us_date=None) == 'us_core'
+
+
+def test_trade_still_works_with_us_param():
+    assert next_action(MON_1520, MON_1520, None, last_us_date=None) == 'trade'

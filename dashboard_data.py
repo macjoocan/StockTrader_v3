@@ -603,10 +603,16 @@ class MarketCache:
         news = self._refresh_news(codes)
         investor = self._refresh_investor(b, codes, now)
         pulse = self._refresh_pulse(b)
+        try:
+            us = b.us_snapshot()
+            us['prices'] = {s: b.us_price(s, e) for s, e in
+                            (('SPY', 'AMS'), ('QQQ', 'NAS'))}
+        except Exception:
+            us = None
         self.snapshot = {'ts': now.isoformat(), 'total': snap.total, 'cash': snap.cash,
                          'holdings': snap.holdings, 'closes': closes, 'quotes': quotes,
                          'ohlcv': ohlcv, 'fin': fin, 'dart': dart, 'news': news,
-                         'investor': investor, 'pulse': pulse}
+                         'investor': investor, 'pulse': pulse, 'us': us}
 
     def _refresh_investor(self, b, codes, now):
         """종목별 투자자 매매동향 (외인/기관 순매수, 표시 전용) — 하루 1회."""
