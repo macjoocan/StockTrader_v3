@@ -58,13 +58,16 @@ def test_page_renders_with_fake_cache(tmp_path, monkeypatch):
     mk = lambda base: pd.Series([base * (1 + i * 0.001) for i in range(250)], index=idx)  # noqa: E731
     cache = SimpleNamespace(
         snapshot={'ts': 'x', 'total': 50393970.0, 'cash': 11326710.0,
+                  'pulse': [{'k': 'KOSPI', 'v': 3120.45, 'chg': 0.32, 'fmt': 'idx'},
+                            {'k': 'BTC', 'v': 165000000.0, 'chg': -1.2, 'fmt': 'krw'}],
                   'holdings': {'069500': (322, 109980.0), '068270': (19, 192300.0)},
                   'closes': {'069500': mk(100000), '068270': mk(190000), '005930': mk(70000)}},
         status='테스트 캐시')
     page = dashboard.render_page(cache=cache)
     for expected in ('068270', '셀트리온', '/stock/068270', '50,393,970', 'KODEX 200',
                      '시그널 레이더', 'RSI2', '실현손익', '운영 리포트', 'D-', '테스트 캐시',
-                     '팩터 랭킹', '매매 미연결', '종목 진단 카드', '추천 아님'):
+                     '팩터 랭킹', '매매 미연결', '종목 진단 카드', '추천 아님',
+                     'KOSPI', '3,120.45', '+0.32%'):
         assert expected in page, expected
 
 

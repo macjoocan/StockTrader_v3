@@ -232,13 +232,29 @@ def factor_ranking(quotes: dict, fin: dict) -> list:
     return rows
 
 
+# ---- 투자자 동향 (수급 — 표시 전용, 매매 신호 아님) ----
+
+def parse_investor(rows: list) -> dict:
+    """inquire-investor output -> {날짜iso: {'frgn': 외인순매수량, 'orgn': 기관순매수량}}"""
+    out = {}
+    for r in rows or []:
+        d = str(r.get('stck_bsop_date') or '')
+        if len(d) != 8:
+            continue
+        iso = f'{d[:4]}-{d[4:6]}-{d[6:8]}'
+        out[iso] = {'frgn': _f(r.get('frgn_ntby_qty')) or 0.0,
+                    'orgn': _f(r.get('orgn_ntby_qty')) or 0.0}
+    return out
+
+
 # ---- 캔들차트 페이로드 (상세 페이지 — 서버가 지표 계산, JS가 렌더) ----
 
 def _nan_list(s, digits=1):
     return [None if pd.isna(x) else round(float(x), digits) for x in s]
 
 
-def chart_payload(ohlcv: pd.DataFrame, news: list = None, dart: list = None) -> dict:
+def chart_payload(ohlcv: pd.DataFrame, news: list = None, dart: list = None,
+                  investor: dict = None) -> dict:
     """OHLCV + 지표(SMA5/20/200, BB20, RSI2) + 이벤트(뉴스/공시) -> JSON 직렬화용 dict"""
     if ohlcv is None or ohlcv.empty:
         return {}
@@ -265,6 +281,8 @@ def chart_payload(ohlcv: pd.DataFrame, news: list = None, dart: list = None) -> 
         'sma200': _nan_list(sma(c, 200)),
         'bbu': _nan_list(sma20 + 2 * std20), 'bbd': _nan_list(sma20 - 2 * std20),
         'rsi': _nan_list(rsi(c, 2)),
+        'frgn': [investor.get(d, {}).get('frgn') if investor else None for d in dates],
+        'orgn': [investor.get(d, {}).get('orgn') if investor else None for d in dates],
         'ev': events,
     }
 
@@ -583,9 +601,59 @@ class MarketCache:
         fin = self._refresh_fin(b, codes, now)
         dart = self._refresh_dart(codes, now)
         news = self._refresh_news(codes)
+        investor = self._refresh_investor(b, codes, now)
+        pulse = self._refresh_pulse(b)
         self.snapshot = {'ts': now.isoformat(), 'total': snap.total, 'cash': snap.cash,
                          'holdings': snap.holdings, 'closes': closes, 'quotes': quotes,
-                         'ohlcv': ohlcv, 'fin': fin, 'dart': dart, 'news': news}
+                         'ohlcv': ohlcv, 'fin': fin, 'dart': dart, 'news': news,
+                         'investor': investor, 'pulse': pulse}
+
+    def _refresh_investor(self, b, codes, now):
+        """종목별 투자자 매매동향 (외인/기관 순매수, 표시 전용) — 하루 1회."""
+        prev = (self.snapshot or {}).get('investor') or {}
+        if prev.get('_date') == f'{now:%F}':
+            return prev
+        inv = {'_date': f'{now:%F}'}
+        for c in codes:
+            if c == CORE_CODE:
+                continue
+            try:
+                d = b._request('GET', '/uapi/domestic-stock/v1/quotations/inquire-investor',
+                               'FHKST01010900',
+                               params={'FID_COND_MRKT_DIV_CODE': 'J', 'FID_INPUT_ISCD': c})
+                inv[c] = parse_investor(d.get('output') or [])
+            except Exception:
+                pass
+        return inv
+
+    def _refresh_pulse(self, b):
+        """Market Pulse: KOSPI/KOSDAQ(KIS) + 환율(er-api) + BTC(업비트). 항목별 무해 실패."""
+        import requests
+        pulse = []
+        for label, iscd in (('KOSPI', '0001'), ('KOSDAQ', '1001')):
+            try:
+                d = b._request('GET', '/uapi/domestic-stock/v1/quotations/inquire-index-price',
+                               'FHPUP02100000',
+                               params={'FID_COND_MRKT_DIV_CODE': 'U', 'FID_INPUT_ISCD': iscd})
+                o = d.get('output') or {}
+                pulse.append({'k': label, 'v': _f(o.get('bstp_nmix_prpr')),
+                              'chg': _f(o.get('bstp_nmix_prdy_ctrt')), 'fmt': 'idx'})
+            except Exception:
+                pass
+        try:
+            r = requests.get('https://open.er-api.com/v6/latest/USD', timeout=10)
+            pulse.append({'k': 'USD/KRW', 'v': float(r.json()['rates']['KRW']),
+                          'chg': None, 'fmt': 'fx'})
+        except Exception:
+            pass
+        try:
+            r = requests.get('https://api.upbit.com/v1/ticker?markets=KRW-BTC', timeout=10)
+            t = r.json()[0]
+            pulse.append({'k': 'BTC', 'v': float(t['trade_price']),
+                          'chg': float(t['signed_change_rate']) * 100, 'fmt': 'krw'})
+        except Exception:
+            pass
+        return pulse
         self.status = f'{now:%H:%M} 갱신 ({len(closes)}종목)'
 
     def _refresh_news(self, codes):

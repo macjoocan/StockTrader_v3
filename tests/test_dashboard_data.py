@@ -288,6 +288,27 @@ def test_build_report_bull_regime():
     assert r['regime'] == '상승 추세' and '전체 기간' == r['label']
 
 
+def test_parse_investor():
+    from dashboard_data import parse_investor
+    rows = [{'stck_bsop_date': '20260902', 'frgn_ntby_qty': '-12345',
+             'orgn_ntby_qty': '6789', 'prsn_ntby_qty': '5556'},
+            {'stck_bsop_date': 'bad'}]
+    out = parse_investor(rows)
+    assert out == {'2026-09-02': {'frgn': -12345.0, 'orgn': 6789.0}}
+    assert parse_investor(None) == {}
+
+
+def test_chart_payload_investor_alignment():
+    from dashboard_data import chart_payload
+    idx = pd.bdate_range(end='2026-09-02', periods=5)
+    df = pd.DataFrame({'open': 100.0, 'high': 101.0, 'low': 99.0,
+                       'close': 100.0, 'volume': 10.0}, index=idx)
+    inv = {f'{idx[-1]:%Y-%m-%d}': {'frgn': -100.0, 'orgn': 50.0}}
+    p = chart_payload(df, investor=inv)
+    assert p['frgn'][-1] == -100.0 and p['orgn'][-1] == 50.0
+    assert p['frgn'][0] is None  # 데이터 없는 날은 None
+
+
 def test_gate_status():
     g = gate_status(date(2026, 8, 22))
     assert g['d_left'] == 23 and g['over'] is False

@@ -167,6 +167,19 @@ def render_page(cache=None) -> str:
     acct_ret = (idx['acct'][-1][1] / 100 - 1) if idx['acct'] else None
     kodex_ret = (idx['kodex'][-1][1] / 100 - 1) if idx['kodex'] else None
 
+    # -- Market Pulse 배너 --
+    def pulse_item(p):
+        if p.get('v') is None:
+            return ''
+        val = (f"{p['v']:,.2f}" if p['fmt'] == 'idx' else
+               f"{p['v']:,.1f}원" if p['fmt'] == 'fx' else f"{p['v']:,.0f}원")
+        chg = (f" <span class='{cls_pnl(p['chg'])}'>{p['chg']:+.2f}%</span>"
+               if p.get('chg') is not None else '')
+        return f"<span class='pitem'><b>{p['k']}</b> {val}{chg}</span>"
+
+    pulse_html = ''.join(pulse_item(p) for p in (snap.get('pulse') or []))
+    pulse_bar = f'<div class="pulse">{pulse_html}</div>' if pulse_html else ''
+
     # -- 카드 --
     total = snap.get('total') or (eq[-1][1] if eq else None)
     core_w = None
@@ -329,6 +342,7 @@ def render_page(cache=None) -> str:
 <h1>📈 Stock Trader <span class="badge {'warn' if mode == 'paper' else 'crit'}">{'모의투자' if mode == 'paper' else '실전'}</span></h1>
 <div class="sub">코어 70% KODEX200 + 새틀 30% RSI2 딥바잉 · 페이지 {now:%m-%d %H:%M} ·
 시장캐시: {html.escape(str(cache_status))} · <a class="back" href="/report">📄 투자 보고서</a></div>
+{pulse_bar}
 <div class="cards">{cards_html}</div>
 <div class="panel"><h2>계좌 vs KODEX 200 (개시 = 100)</h2>{chart}</div>
 <div class="two">
@@ -414,6 +428,9 @@ STYLE_EXTRA = '''
 .crange button { background: #1d2739; color: var(--ink2); border: 1px solid var(--grid);
                  border-radius: 6px; padding: 3px 12px; font-size: 12px; cursor: pointer; }
 .crange button.on { background: #182c44; color: var(--info); border-color: var(--info); }
+.pulse { background: var(--card); border-radius: 8px; padding: 8px 14px; margin-bottom: 14px;
+         display: flex; gap: 22px; flex-wrap: wrap; font-size: 13px; }
+.pulse .pitem b { color: var(--ink2); font-weight: 600; margin-right: 4px; }
 #cchart svg { width: 100%; height: auto; display: block; user-select: none; cursor: crosshair; }
 '''
 
@@ -424,9 +441,11 @@ CANDLE_JS = r'''
 const el = document.getElementById('cchart');
 if (!el) return;
 const D = JSON.parse(el.dataset.payload), N = D.d.length;
-const W=760, PAD=48, HP=250, HV=54, HR=64, GAP=14, TOPP=20;
-const H = TOPP+HP+GAP+HV+GAP+HR+22;
+const hasInv = Array.isArray(D.frgn) && D.frgn.some(x => x != null);
+const W=760, PAD=48, HP=250, HV=54, HR=64, HI=58, GAP=14, TOPP=20;
+const H = TOPP+HP+GAP+HV+GAP+HR+(hasInv?GAP+HI:0)+22;
 const UP='#e0605e', DN='#5ba3f5', C5='#d9a13b', C20='#3fb970', C200='#9aa7bd';
+const CF='#3f7fc9', CO='#bd8137';  // 외인/기관 (검증 팔레트 쌍)
 const tip = document.getElementById('tip');
 let i0 = Math.max(0, N-66), i1 = N, drag = null;
 const evByDate = {};
@@ -480,13 +499,28 @@ function render(){
   for(let i=i0;i<i1;i++){ if(D.rsi[i]!=null) pr+=`${x(i)},${yr(D.rsi[i])} `; }
   if(pr) s += `<polyline points="${pr}" fill="none" stroke="${DN}" stroke-width="1.4"/>`;
   s += `<text x="${PAD}" y="${y0r+16}" class="axis">RSI(2)</text>`;
+  // 수급 서브패널: 창 내 누적 순매수 (외인/기관) — 표시 전용
+  let yBot = y0r;
+  if (hasInv){
+    const y0i = y0r+GAP+HI; yBot = y0i;
+    let cf=0, co=0; const F=[], O=[];
+    for(let i=i0;i<i1;i++){ cf += (D.frgn[i]||0); co += (D.orgn[i]||0); F.push(cf); O.push(co); }
+    const mx = Math.max(1, ...F.map(Math.abs), ...O.map(Math.abs));
+    const yi = v => y0i - HI/2 - (HI/2)*v/mx;
+    s += `<line x1="${PAD}" x2="${W-PAD}" y1="${yi(0)}" y2="${yi(0)}" class="grid"/>`;
+    let pf='', po='';
+    for(let j=0;j<F.length;j++){ const cx=x(i0+j); pf+=`${cx},${yi(F[j])} `; po+=`${cx},${yi(O[j])} `; }
+    s += `<polyline points="${pf}" fill="none" stroke="${CF}" stroke-width="1.6"/>`
+       + `<polyline points="${po}" fill="none" stroke="${CO}" stroke-width="1.6"/>`
+       + `<text x="${PAD}" y="${y0i+16}" class="axis">수급 누적(주) <tspan fill="${CF}">외인</tspan> <tspan fill="${CO}">기관</tspan></text>`;
+  }
   // 이벤트 마커 (뉴스/공시)
   for (let i=i0;i<i1;i++){ const evs=evByDate[D.d[i]];
     if(evs) s += `<text x="${x(i)}" y="${TOPP-6}" text-anchor="middle" font-size="11">${evs.some(e=>e.k=='news')?'📰':'📋'}</text>`; }
   // 범례
   s += `<text x="${W-PAD}" y="12" text-anchor="end" class="axis">`
      + `<tspan fill="${C5}">SMA5</tspan> <tspan fill="${C20}">SMA20</tspan> <tspan fill="${C200}">SMA200</tspan></text>`;
-  s += `<line id="cxh" y1="${TOPP}" y2="${y0r}" class="crosshair" visibility="hidden"/>`;
+  s += `<line id="cxh" y1="${TOPP}" y2="${yBot}" class="crosshair" visibility="hidden"/>`;
   s += `<rect id="selr" y="${TOPP}" height="${HP}" fill="#5ba3f5" opacity="0.15" visibility="hidden"/>`;
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}">${s}</svg>`;
   bind();
@@ -509,6 +543,8 @@ function bind(){
       `시 ${fmt(D.o[i])}  고 ${fmt(D.h[i])}  저 ${fmt(D.l[i])}  종 ${fmt(D.c[i])}`,
       `량 ${fmt(D.v[i])}  RSI2 ${D.rsi[i]==null?'—':D.rsi[i].toFixed(1)}`,
       `SMA5 ${fmt(D.sma5[i])}  20 ${fmt(D.sma20[i])}  200 ${fmt(D.sma200[i])}`];
+    if (hasInv && (D.frgn[i]!=null || D.orgn[i]!=null))
+      lines.push(`외인 ${fmt(D.frgn[i])}주  기관 ${fmt(D.orgn[i])}주`);
     (evByDate[D.d[i]]||[]).forEach(e => lines.push((e.k=='news'?'📰 ':'📋 ')+e.t.slice(0,42)));
     tip.hidden=false; tip.textContent=lines.join('\n');
     tip.style.left=(ev.clientX+14)+'px'; tip.style.top=(ev.clientY-10)+'px';
@@ -641,7 +677,8 @@ def render_stock(code: str, cache=None) -> str:
     else:
         dart_html = '<div class="empty">최근 30일 공시 없음 (또는 수집 중)</div>'
 
-    payload = chart_payload((snap.get('ohlcv') or {}).get(code), nrows, drows)
+    payload = chart_payload((snap.get('ohlcv') or {}).get(code), nrows, drows,
+                            investor=(snap.get('investor') or {}).get(code))
     if payload:
         pj = html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
         chart = f'''<div class="crange">
