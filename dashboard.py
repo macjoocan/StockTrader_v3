@@ -18,10 +18,10 @@ from flask import Flask
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, str(Path(__file__).parent))
 
-from dashboard_data import (CORE_CODE, chart_payload, diagnose_cards,  # noqa: E402
-                            enrich_positions, factor_ranking, fin_rows, gate_status,
-                            indexed_pair, ops_report, radar_rows, realized_trades,
-                            valuation_row)
+from dashboard_data import (CORE_CODE, build_report, chart_payload,  # noqa: E402
+                            diagnose_cards, enrich_positions, factor_ranking,
+                            fin_rows, gate_status, indexed_pair, ops_report,
+                            radar_rows, realized_trades, valuation_row)
 
 KST = timezone(timedelta(hours=9))
 DATA_DIR = Path(os.environ.get('DATA_DIR') or './data-volume')
@@ -328,7 +328,7 @@ def render_page(cache=None) -> str:
 </style></head><body>
 <h1>📈 Stock Trader <span class="badge {'warn' if mode == 'paper' else 'crit'}">{'모의투자' if mode == 'paper' else '실전'}</span></h1>
 <div class="sub">코어 70% KODEX200 + 새틀 30% RSI2 딥바잉 · 페이지 {now:%m-%d %H:%M} ·
-시장캐시: {html.escape(str(cache_status))}</div>
+시장캐시: {html.escape(str(cache_status))} · <a class="back" href="/report">📄 투자 보고서</a></div>
 <div class="cards">{cards_html}</div>
 <div class="panel"><h2>계좌 vs KODEX 200 (개시 = 100)</h2>{chart}</div>
 <div class="two">
@@ -677,6 +677,71 @@ def render_stock(code: str, cache=None) -> str:
 @app.route('/')
 def index():
     return render_page()
+
+
+def render_report(days: int, cache=None) -> str:
+    cache = cache if cache is not None else CACHE
+    snap = getattr(cache, 'snapshot', None) or {}
+    closes = snap.get('closes') or {}
+    state = load_positions(DATA_DIR)
+    events = load_events(DATA_DIR)
+    now = datetime.now(KST)
+    live = (f'{now:%Y-%m-%d}', snap['total']) if snap.get('total') else None
+    uni_closes = {c: s for c, s in closes.items() if c != CORE_CODE}
+    r = build_report(
+        eq=equity_series(events), kodex=closes.get(CORE_CODE), live=live,
+        state=state, events=events,
+        radar=radar_rows(uni_closes, holdings=set(state['positions'])),
+        pos_rows=enrich_positions(state['positions'], closes, today=now.date()),
+        news=snap.get('news') or {}, names=NAMES, days=days)
+
+    tabs = ''.join(
+        f'<a class="rtab{" on" if days == d else ""}" href="/report?d={d}">{lbl}</a>'
+        for d, lbl in ((7, '주간'), (30, '월간'), (0, '전체')))
+    pos_html = ''.join(f'<li>{html.escape(p)}</li>' for p in r['pos_list']) or \
+        '<li class="muted">보유 포지션 없음</li>'
+    watch_html = ''.join(f'<li>{html.escape(w)}</li>' for w in r['watch_list']) or \
+        '<li class="muted">해당 없음 (SMA200 위 종목 부족)</li>'
+    if r['trades']:
+        tr_html = '<table><tr><th>종목</th><th>기간</th><th class="num">손익</th></tr>' + ''.join(
+            f"<tr><td>{html.escape(nm(t['code']))}</td><td>{t['buy_day']} → {t['sell_day']}</td>"
+            f"<td class='num {cls_pnl(t['pnl'])}'>{won(t['pnl'])} ({pct(t['pnl_pct'])})</td></tr>"
+            for t in r['trades']) + '</table>'
+    else:
+        tr_html = '<div class="muted">기간 내 청산 거래 없음</div>'
+    regime_cls = {'상승 추세': 'good', '혼조': 'warn', '약세 조정': 'crit'}.get(r['regime'], 'muted')
+
+    return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="300"><title>투자 보고서 — Stock Trader</title>
+<style>{BASE_STYLE}{STYLE_EXTRA}
+.rtab {{ padding: 4px 14px; border: 1px solid var(--grid); border-radius: 6px;
+        color: var(--ink2); text-decoration: none; font-size: 13px; margin-right: 6px; }}
+.rtab.on {{ background: #182c44; color: var(--info); border-color: var(--info); }}
+.report li {{ margin: 6px 0; }} .report p {{ margin: 4px 0 10px; line-height: 1.7; }}
+</style></head><body class="report">
+<a class="back" href="/">← 대시보드</a>
+<h1 style="margin-top:8px">📄 투자 보고서 <span class="muted small">{r['asof']} 기준</span></h1>
+<div class="sub">규칙 기반 자동 생성 (전 문장 데이터 역추적 가능) · 참고용 · 투자 추천 아님</div>
+<div style="margin-bottom:14px">{tabs}</div>
+<div class="panel"><h2>① 성과 — {r['label']}</h2><p>{html.escape(r['perf_p'])}</p></div>
+<div class="panel"><h2>② 시장 레짐: <span class="{regime_cls}">{r['regime']}</span></h2>
+<p>{html.escape(r['regime_p'])}</p></div>
+<div class="panel"><h2>③ 보유 포지션 리뷰</h2><ul>{pos_html}</ul></div>
+<div class="panel"><h2>④ 기간 거래 (실현손익 {won(r['realized'])})</h2>{tr_html}</div>
+<div class="panel"><h2>⑤ 관찰 종목 — 신호권 근접 (SMA200 위 · RSI2 낮은 순)</h2>
+<ul>{watch_html}</ul></div>
+<div class="panel"><h2>⑥ 운영 상태</h2><p>{html.escape(r['ops_p'])}</p></div>
+</body></html>'''
+
+
+@app.route('/report')
+def report():
+    from flask import request
+    try:
+        days = int(request.args.get('d', 7))
+    except ValueError:
+        days = 7
+    return render_report(days if days in (0, 7, 30) else 7)
 
 
 @app.route('/stock/<code>')

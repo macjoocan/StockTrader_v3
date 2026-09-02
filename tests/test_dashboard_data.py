@@ -243,6 +243,51 @@ def test_chart_payload_indicators_and_events():
     assert chart_payload(None) == {} and chart_payload(pd.DataFrame()) == {}
 
 
+def test_build_report_weak_regime_and_narratives():
+    from dashboard_data import build_report
+    eq = [('2026-08-26', 50000000.0), ('2026-09-01', 49600000.0), ('2026-09-02', 47980000.0)]
+    kodex = series([110000, 109000, 105000], end='2026-09-02')
+    radar = [
+        {'code': 'A', 'rsi2': 2.2, 'above_sma200': False, 'signal': False, 'holding': True,
+         'cur': 1, 'chg': 0, 'sma5_dist': None},
+        {'code': 'B', 'rsi2': 3.4, 'above_sma200': False, 'signal': False, 'holding': False,
+         'cur': 1, 'chg': 0},
+        {'code': 'C', 'rsi2': 15.0, 'above_sma200': True, 'signal': False, 'holding': False,
+         'cur': 1, 'chg': 0},
+    ]
+    pos_rows = [{'code': 'A', 'qty': 8, 'entry': 463000.0, 'entry_date': '2026-08-26',
+                 'days': 7, 'cur': 415500.0, 'pnl': -380000.0, 'pnl_pct': -0.103,
+                 'sma5_dist': -0.02}]
+    events = [
+        {'kind': 'daily_summary', 'ts': '2026-09-02T15:22:00+09:00', 'signals': 0},
+        {'kind': 'fill', 'ts': '2026-08-26T15:29:00+09:00', 'code': 'X', 'side': 'BUY',
+         'qty': 19, 'price': 100.0, 'ok': True},
+        {'kind': 'fill', 'ts': '2026-09-01T15:29:00+09:00', 'code': 'X', 'side': 'SELL',
+         'qty': 19, 'price': 110.0, 'ok': True},
+    ]
+    news = {'A': [{'title': 'A사 신제품', 'url': 'u', 'date': 'x', 'iso': '2026-09-02'}]}
+    r = build_report(eq=eq, kodex=kodex, live=None, state={}, events=events,
+                     radar=radar, pos_rows=pos_rows, news=news,
+                     names={'A': '에이사', 'C': '씨사'}, days=7)
+    assert r['regime'] == '약세 조정' and '방어 모드' in r['regime_p']
+    assert '-4.0' in r['perf_p']  # 계좌 -4.04%
+    assert 'KODEX' in r['perf_p']
+    assert r['realized'] == (110.0 - 100.0) * 19
+    assert '에이사' in r['pos_list'][0] and '반등 대기' in r['pos_list'][0]
+    assert 'A사 신제품' in r['pos_list'][0]
+    assert r['watch_list'] == ['씨사 RSI2 15.0']  # SMA200 위+미보유만
+
+
+def test_build_report_bull_regime():
+    from dashboard_data import build_report
+    radar = [{'code': c, 'rsi2': 50.0, 'above_sma200': True, 'signal': False,
+              'holding': False, 'cur': 1, 'chg': 0} for c in 'ABCDEFGHIJ']
+    r = build_report(eq=[('2026-09-01', 100.0), ('2026-09-02', 101.0)], kodex=None,
+                     live=None, state={}, events=[], radar=radar, pos_rows=[],
+                     news={}, names={}, days=0)
+    assert r['regime'] == '상승 추세' and '전체 기간' == r['label']
+
+
 def test_gate_status():
     g = gate_status(date(2026, 8, 22))
     assert g['d_left'] == 23 and g['over'] is False

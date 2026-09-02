@@ -102,6 +102,29 @@ def test_render_stock_detail(tmp_path, monkeypatch):
         assert expected in page, expected
 
 
+def test_render_report_page(tmp_path, monkeypatch):
+    import dashboard
+    monkeypatch.setattr(dashboard, 'DATA_DIR', tmp_path)
+    (tmp_path / 'positions.json').write_text(json.dumps(
+        {'positions': {'012330': {'qty': 8, 'entry_price': 463000, 'entry_date': '2026-08-26'}},
+         'last_trade_date': '2026-09-02', 'last_rebal_ym': '2026-09'}), encoding='utf-8')
+    (tmp_path / 'events_2026-09-02.jsonl').write_text(
+        '{"kind":"daily_summary","ts":"2026-09-02T15:22:00+09:00","total":47980272,"signals":0}\n',
+        encoding='utf-8')
+    idx = pd.bdate_range(end='2026-09-02', periods=250)
+    mk = lambda base: pd.Series([base * (1 - i * 0.0005) for i in range(250)], index=idx)  # noqa: E731
+    cache = SimpleNamespace(
+        snapshot={'total': 47980272.0, 'cash': 11000000.0,
+                  'holdings': {'069500': (322, 106000.0), '012330': (8, 415500.0)},
+                  'closes': {'069500': mk(115000), '012330': mk(480000)},
+                  'news': {}},
+        status='ok')
+    page = dashboard.render_report(7, cache=cache)
+    for expected in ('투자 보고서', '① 성과', '② 시장 레짐', '보유 포지션 리뷰',
+                     '현대모비스', '운영 상태', '추천 아님'):
+        assert expected in page, expected
+
+
 def test_stock_route_rejects_bad_code():
     import dashboard
     client = dashboard.app.test_client()

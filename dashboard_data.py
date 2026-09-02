@@ -321,6 +321,112 @@ def diagnose_cards(quotes: dict, fin: dict, closes_map: dict, holdings: set) -> 
     return cards
 
 
+# ---- 투자 보고서 (규칙 기반 서술 생성 — LLM 아님, 전 문장 데이터 역추적 가능) ----
+
+def _pct(v, digits=2):
+    return f'{v*100:+.{digits}f}%' if v is not None else '—'
+
+
+def _window_ret(points: list, days: int) -> float | None:
+    """[(날짜str, 값)] 시계열의 최근 days일 수익률 (days=0이면 전체)"""
+    if len(points) < 2:
+        return None
+    pts = points if days <= 0 else [p for p in points if
+                                    (date.fromisoformat(points[-1][0])
+                                     - date.fromisoformat(p[0])).days <= days]
+    if len(pts) < 2 or pts[0][1] <= 0:
+        return None
+    return pts[-1][1] / pts[0][1] - 1.0
+
+
+def build_report(*, eq: list, kodex, live: tuple | None, state: dict, events: list,
+                 radar: list, pos_rows: list, news: dict, names: dict,
+                 days: int = 7) -> dict:
+    """대시보드 데이터 -> 보고서 dict (문단 서술 + 표 데이터). 순수함수."""
+    nm = lambda c: names.get(c) or c  # noqa: E731
+    by_day = dict(eq)
+    if live:
+        by_day[live[0]] = live[1]
+    acct_pts = sorted(by_day.items())
+    kodex_pts = ([(f'{ts:%Y-%m-%d}', float(v)) for ts, v in kodex.items()]
+                 if kodex is not None and len(kodex) else [])
+    # 기간을 계좌 시계열 구간과 정렬
+    if acct_pts and kodex_pts:
+        kodex_pts = [p for p in kodex_pts if p[0] >= acct_pts[0][0]]
+    acct_ret = _window_ret(acct_pts, days)
+    kodex_ret = _window_ret(kodex_pts, days)
+    diff = (acct_ret - kodex_ret) if None not in (acct_ret, kodex_ret) else None
+
+    # 거래/실현손익 (기간)
+    all_trades = realized_trades(events)
+    cutoff = (date.fromisoformat(acct_pts[-1][0]) - timedelta(days=days)).isoformat() \
+        if (days > 0 and acct_pts) else ''
+    trades = [t for t in all_trades if t['sell_day'] >= cutoff]
+    realized = sum(t['pnl'] for t in trades)
+    unrealized = sum(r['pnl'] or 0 for r in pos_rows)
+
+    label = '전체 기간' if days <= 0 else f'최근 {days}일'
+    total_txt = f'{acct_pts[-1][1]:,.0f}원' if acct_pts else '—'
+    perf_p = (f'{label} 계좌 수익률은 {_pct(acct_ret)}'
+              + (f' (KODEX 200 {_pct(kodex_ret)}, 상대 {_pct(diff)}p)' if diff is not None else '')
+              + f'. 현재 평가금액 {total_txt}.'
+              + f' 기간 실현손익 {realized:+,.0f}원({len(trades)}건),'
+              + f' 새틀라이트 평가손익 {unrealized:+,.0f}원.')
+
+    # 레짐 판정 (명시 규칙)
+    judged = [r for r in radar if r['above_sma200'] is not None]
+    above = sum(1 for r in judged if r['above_sma200'])
+    n_sig = sum(1 for r in radar if r['signal'])
+    deep = [r for r in radar if (r['rsi2'] or 100) < 10]
+    ratio = above / len(judged) if judged else None
+    if ratio is None:
+        regime, regime_p = '판정 불가', '시장 데이터 수집 전.'
+    elif ratio >= 0.7:
+        regime = '상승 추세'
+        regime_p = (f'유니버스 {len(judged)}종목 중 {above}개({ratio*100:.0f}%)가 SMA200 위 — '
+                    f'추세 건재. 딥 발생 시 진입 가능 상태.')
+    elif ratio >= 0.4:
+        regime = '혼조'
+        regime_p = (f'SMA200 위 {above}/{len(judged)}({ratio*100:.0f}%) — 종목별 차별화 구간.')
+    else:
+        regime = '약세 조정'
+        regime_p = (f'유니버스 {len(judged)}종목 중 {len(judged)-above}개가 SMA200 아래 — '
+                    f'조정 레짐. 과매도(RSI2<10) {len(deep)}종목이 있어도 추세 필터가 '
+                    f'진입을 차단하는 방어 모드.')
+    regime_p += f' 현재 신호권 {n_sig}종목.'
+
+    # 포지션 서술
+    pos_list = []
+    for r in pos_rows:
+        line = (f"{nm(r['code'])}({r['code']}): {r['qty']}주 @{r['entry']:,.0f} "
+                f"({r['entry_date']}~, {r['days']}일차), 수익률 {_pct(r['pnl_pct'])}")
+        if r['sma5_dist'] is not None:
+            line += (' — 종가가 SMA5 위, 다음 사이클 청산 예정' if r['sma5_dist'] > 0
+                     else f" — 청산선(SMA5)까지 {_pct(r['sma5_dist'])}, 반등 대기")
+        n0 = (news.get(r['code']) or [None])[0]
+        if n0:
+            line += f" · 최근 기사: {n0['title'][:40]}"
+        pos_list.append(line)
+
+    # 관찰 종목: SMA200 위 + RSI2 낮은 순 (신호권 근접, 미보유)
+    watch = [r for r in radar
+             if r['above_sma200'] and not r['holding'] and r['rsi2'] is not None][:5]
+    watch_list = [f"{nm(r['code'])} RSI2 {r['rsi2']:.1f}"
+                  + (' ⚡신호권' if r['signal'] else '') for r in watch]
+
+    ops = ops_report(events)
+    ops_p = (f"운영 {ops['first_day']}~{ops['last_day']}: 사이클 성공 {ops['summary_days']}일 / "
+             f"스킵 {ops['skip_days']}일, 누적 신호 {ops['signals']}건·체결 {ops['fills_ok']}건.")
+    if ops['last_error']:
+        ops_p += f" 최근 에러: {ops['last_error']}"
+
+    return {'asof': acct_pts[-1][0] if acct_pts else '', 'label': label,
+            'perf_p': perf_p, 'regime': regime, 'regime_p': regime_p,
+            'pos_list': pos_list, 'trades': trades, 'realized': realized,
+            'watch_list': watch_list, 'ops_p': ops_p,
+            'acct_ret': acct_ret, 'kodex_ret': kodex_ret}
+
+
 def gate_status(today: date) -> dict:
     d_left = (GATE_END - today).days
     return {'end': GATE_END.isoformat(), 'd_left': d_left, 'over': d_left < 0}
